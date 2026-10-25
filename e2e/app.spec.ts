@@ -10,13 +10,11 @@ test("実ファイルの資料抽出・編集・保存復元・言語切替・�
   await expect(
     page.getByRole("heading", { name: "シャドーイング・スタジオ" }),
   ).toBeVisible();
-  await page
-    .getByLabel("資料ファイル")
-    .setInputFiles({
-      name: "sample.txt",
-      mimeType: "text/plain",
-      buffer: Buffer.from("Dr. Lee paid 3.14 dollars. What matters today?"),
-    });
+  await page.getByLabel("資料ファイル").setInputFiles({
+    name: "sample.txt",
+    mimeType: "text/plain",
+    buffer: Buffer.from("Dr. Lee paid 3.14 dollars. What matters today?"),
+  });
   await page.getByRole("button", { name: "文に分割する", exact: true }).click();
   await expect(page.getByLabel("1文目の原稿")).toHaveValue(
     "Dr. Lee paid 3.14 dollars.",
@@ -50,39 +48,33 @@ test("実ファイルの資料抽出・編集・保存復元・言語切替・�
       '<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Hello from Word.</w:t></w:r></w:p></w:body></w:document>',
     ),
   });
-  await page
-    .getByLabel("資料ファイル")
-    .setInputFiles({
-      name: "real.docx",
-      mimeType:
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      buffer: Buffer.from(docx),
-    });
+  await page.getByLabel("資料ファイル").setInputFiles({
+    name: "real.docx",
+    mimeType:
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    buffer: Buffer.from(docx),
+  });
   await expect(page.getByLabel("本文", { exact: true })).toHaveValue(
     /Hello from Word/,
   );
   const pdf = await PDFDocument.create();
   const font = await pdf.embedFont(StandardFonts.Helvetica);
   pdf.addPage().drawText("PDF document. Keep every word.", { font });
-  await page
-    .getByLabel("資料ファイル")
-    .setInputFiles({
-      name: "text.pdf",
-      mimeType: "application/pdf",
-      buffer: Buffer.from(await pdf.save()),
-    });
+  await page.getByLabel("資料ファイル").setInputFiles({
+    name: "text.pdf",
+    mimeType: "application/pdf",
+    buffer: Buffer.from(await pdf.save()),
+  });
   await expect(page.getByLabel("本文", { exact: true })).toHaveValue(
     /PDF document. Keep every word/,
   );
   const image = await PDFDocument.create();
   image.addPage();
-  await page
-    .getByLabel("資料ファイル")
-    .setInputFiles({
-      name: "empty.pdf",
-      mimeType: "application/pdf",
-      buffer: Buffer.from(await image.save()),
-    });
+  await page.getByLabel("資料ファイル").setInputFiles({
+    name: "empty.pdf",
+    mimeType: "application/pdf",
+    buffer: Buffer.from(await image.save()),
+  });
   await expect(page.getByRole("alert")).toContainText(
     "画像PDFには対応していません",
   );
@@ -93,7 +85,9 @@ test("実ファイルの資料抽出・編集・保存復元・言語切替・�
   await page.getByRole("button", { name: "文に分割する", exact: true }).click();
   await expect(page.getByLabel("2文目の原稿")).toHaveValue("请慢慢说。");
   await expect(
-    page.getByText("同じ原稿で、英語は5声、中国語は3声を聴き比べられます。試聴して、発音や区切り、好みに合う声か確認してください。"),
+    page.getByText(
+      "同じ原稿で、英語は5声、中国語は3声を聴き比べられます。試聴して、発音や区切り、好みに合う声か確認してください。",
+    ),
   ).toBeVisible();
   await expect(page.getByRole("radio")).toHaveCount(3);
   for (const width of [390, 1280]) {
@@ -336,4 +330,46 @@ test("マイク拒否・容量不足・生成失敗から通常操作へ戻れ�
   await expect(
     page.getByRole("button", { name: "一時停止", exact: true }),
   ).toBeVisible();
+});
+
+test("PDFを取り込み声を確定すれば手動の文分割なしで全文生成を開始できる", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const pdf = await PDFDocument.create();
+  const font = await pdf.embedFont(StandardFonts.Helvetica);
+  pdf
+    .addPage()
+    .drawText("Take a deep breath. What matters to you today?", { font });
+  await page
+    .getByLabel("資料ファイル")
+    .setInputFiles({
+      name: "english-practice.pdf",
+      mimeType: "application/pdf",
+      buffer: Buffer.from(await pdf.save()),
+    });
+  await expect(page.getByLabel("本文", { exact: true })).toHaveValue(
+    /Take a deep breath/,
+  );
+  await page
+    .getByRole("button", { name: "この声と設定で確定", exact: true })
+    .click();
+  const full = page.getByRole("button", { name: "全文生成", exact: true });
+  await expect(full).toBeEnabled();
+  await page.route("https://huggingface.co/**", (r) =>
+    r.abort("blockedbyclient"),
+  );
+  await full.click();
+  await expect(page.getByLabel("1文目の原稿")).toHaveValue(
+    "Take a deep breath.",
+  );
+  await expect(page.getByLabel("2文目の原稿")).toHaveValue(
+    "What matters to you today?",
+  );
+  await expect(page.getByRole("alert")).toContainText("音声モデル", {
+    timeout: 30000,
+  });
+  await expect(
+    page.getByRole("button", { name: "失敗した文から再試行", exact: true }),
+  ).toBeEnabled();
 });

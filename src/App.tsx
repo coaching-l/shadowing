@@ -65,6 +65,15 @@ export default function App() {
   const report = (message: string) => setError(message);
   const availableVoices = lesson.lang === "zh" ? ZH_VOICES : VOICES;
   const config = JSON.stringify([lesson.lang, lesson.voice, lesson.speed]);
+  const generationHint = importing
+    ? "資料を読み込んでいます。"
+    : !lesson.text.trim()
+      ? "資料を取り込むか、本文を入力してください。"
+      : confirmed !== config
+        ? "「この声と設定で確定」を押すと、全文生成に進めます。"
+        : !lesson.sentences.length
+          ? "全文生成を押すと本文を自動で文に分割します。事前に確認したい場合は「文に分割する」を使えます。"
+          : "";
   const clips = useMemo(() => {
     const map = new Map(lesson.clips.map((c) => [c.key, c]));
     const current = lesson.sentences.map((text) =>
@@ -121,7 +130,7 @@ export default function App() {
       update({ text, sentences: [], title: file.name.replace(/\.[^.]+$/, "") });
       setConfirmed("");
       setNotice(
-        "本文を取り込みました。読み上げ範囲を編集してから、文に分割してください。",
+        "本文を取り込みました。読み上げ範囲を確認して、声を確定してください。文の区切りは全文生成の開始時に自動で作成します。",
       );
     } catch (e) {
       report(String(e));
@@ -161,9 +170,11 @@ export default function App() {
     setProgress("試聴を準備中…");
     cancelled.current = false;
     try {
-      const text = previewText.trim() || lesson.sentences.slice(0, 2).join(" ");
-      if (!text)
-        throw Error("試聴原稿を入力するか、本文を文に分割してください。");
+      const sentences = lesson.sentences.length
+        ? lesson.sentences
+        : splitSentences(lesson.text.trim(), lesson.lang);
+      const text = previewText.trim() || sentences.slice(0, 2).join(" ");
+      if (!text) throw Error("本文または試聴原稿を入力してください。");
       if (text.length > 400)
         throw Error(
           "試聴原稿は400文字までです。自然な文の区切りで短くしてください。",
@@ -206,11 +217,19 @@ export default function App() {
     setError("");
     setFailed(null);
     cancelled.current = false;
-    const snapshot = lesson;
+    let snapshot = lesson;
     const cache = new Map(lesson.clips.map((c) => [c.key, c]));
     try {
-      if (!snapshot.sentences.length)
-        throw Error("本文を文に分割してください。");
+      if (!snapshot.text.trim()) throw Error("本文を入力してください。");
+      if (snapshot.text.trim().length > 50000)
+        throw Error("1教材の上限は50,000文字です。教材を分けてください。");
+      if (!snapshot.sentences.length) {
+        const sentences = splitSentences(snapshot.text, snapshot.lang);
+        if (!sentences.length)
+          throw Error("読み上げる本文を入力してください。");
+        snapshot = { ...snapshot, sentences };
+        setLesson((l) => ({ ...l, sentences }));
+      }
       if (snapshot.sentences.some((s) => !s.trim()))
         throw Error("空の文を削除してください。");
       for (let i = 0; i < snapshot.sentences.length; i++) {
@@ -729,7 +748,7 @@ export default function App() {
                     onChange={(e) => setPreviewText(e.target.value)}
                     placeholder={
                       lesson.sentences.slice(0, 2).join(" ") ||
-                      "本文を分割するか、短い試聴原稿を入力してください。"
+                      "本文を入力すると先頭の文で試聴できます。短い試聴原稿を直接入力することもできます。"
                     }
                   />
                 </label>
@@ -816,14 +835,22 @@ export default function App() {
                   <div>
                     <strong>全文を音声にする</strong>
                     <p className="small">
-                      {readyCount} / {lesson.sentences.length}文の音声を保持 ·
-                      成功した文は再利用
+                      {lesson.sentences.length
+                        ? `${readyCount} / ${lesson.sentences.length}文の音声を保持 · 成功した文は再利用`
+                        : "本文の文分割は生成開始時に自動で行います。"}
+                    </p>
+                    <p id="generation-help" className="small">
+                      {generationHint}
                     </p>
                   </div>
                   <button
                     className="primary"
+                    aria-describedby="generation-help"
                     disabled={
-                      busy || confirmed !== config || !lesson.sentences.length
+                      busy ||
+                      importing ||
+                      confirmed !== config ||
+                      !lesson.text.trim()
                     }
                     onClick={() => void generate()}
                   >
