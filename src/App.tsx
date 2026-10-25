@@ -796,7 +796,7 @@ export default function App() {
                       </label>
                       <button
                         className="small-button"
-                        disabled={busy}
+                        disabled={busy || importing}
                         onClick={() => void listen(voice.id)}
                       >
                         <Headphones size={15} />
@@ -816,7 +816,9 @@ export default function App() {
                 </p>
                 <button
                   disabled={
-                    busy || !availableVoices.some((v) => v.id === lesson.voice)
+                    busy ||
+                    importing ||
+                    !availableVoices.some((v) => v.id === lesson.voice)
                   }
                   onClick={() => {
                     stopPreview();
