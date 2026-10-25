@@ -1,0 +1,917 @@
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  BookOpen,
+  Upload,
+  Check,
+  Headphones,
+  Plus,
+  Trash2,
+  Save,
+  ArrowRight,
+  FileText,
+  LoaderCircle,
+} from "lucide-react";
+import { clipKey, NO_GAP, splitSentences, wavBlob } from "./core";
+import type { Clip, Lang } from "./core";
+import { extractDocument } from "./documents";
+import { BrowserEngine, VOICES, ZH_VOICES } from "./engine";
+import { saveLesson, listLessons, deleteLesson } from "./storage";
+import type { Lesson, Recording } from "./storage";
+import Practice from "./Practice";
+const fresh = (): Lesson => ({
+  id: crypto.randomUUID(),
+  title: "新しい教材",
+  lang: "en",
+  text: "",
+  sentences: [],
+  voice: "af_heart",
+  speed: 1,
+  clips: [],
+  gap: { ...NO_GAP },
+  mode: "shadow",
+  a: 0,
+  b: 0,
+  repeat: 3,
+  repeatGap: 1,
+  rate: 1,
+  loop: false,
+  updated: Date.now(),
+});
+export default function App() {
+  const [lesson, setLesson] = useState<Lesson>(fresh),
+    [library, setLibrary] = useState<Lesson[]>([]),
+    [notice, setNotice] = useState(""),
+    [error, setError] = useState(""),
+    [busy, setBusy] = useState(false),
+    [progress, setProgress] = useState(""),
+    [failed, setFailed] = useState<number | null>(null),
+    [confirmed, setConfirmed] = useState(""),
+    [previewText, setPreviewText] = useState(""),
+    [previewVoice, setPreviewVoice] = useState(""),
+    [recording, setRecording] = useState<Recording | undefined>(),
+    [persistRecording, setPersistRecording] = useState(false),
+    [importing, setImporting] = useState(false),
+    [saving, setSaving] = useState(false);
+  const rawInput = useRef<HTMLTextAreaElement>(null),
+    engine = useRef(new BrowserEngine()),
+    preview = useRef<HTMLAudioElement>(null),
+    previewUrl = useRef(""),
+    previewCache = useRef(new Map<string, Clip>()),
+    cancelled = useRef(false);
+  const update = (patch: Partial<Lesson>) => {
+    setNotice("");
+    setLesson((l) => ({ ...l, ...patch }));
+  };
+  const report = (message: string) => setError(message);
+  const availableVoices = lesson.lang === "zh" ? ZH_VOICES : VOICES;
+  const config = JSON.stringify([lesson.lang, lesson.voice, lesson.speed]);
+  const clips = useMemo(() => {
+    const map = new Map(lesson.clips.map((c) => [c.key, c]));
+    const current = lesson.sentences.map((text) =>
+      map.get(clipKey(text, lesson.voice, lesson.speed)),
+    );
+    return current.every(Boolean) ? (current as Clip[]) : [];
+  }, [lesson.clips, lesson.sentences, lesson.voice, lesson.speed]);
+  const readyCount = lesson.sentences.filter((text) =>
+    lesson.clips.some(
+      (c) => c.key === clipKey(text, lesson.voice, lesson.speed),
+    ),
+  ).length;
+  useEffect(() => {
+    const exclusive = (e: Event) =>
+      document.querySelectorAll("audio").forEach((el) => {
+        if (el !== e.target) el.pause();
+      });
+    document.addEventListener("play", exclusive, true);
+    return () => document.removeEventListener("play", exclusive, true);
+  }, []);
+  useEffect(() => {
+    void listLessons()
+      .then(setLibrary)
+      .catch((e) => report("教材一覧を読み込めません。 " + String(e)));
+    return () => {
+      engine.current.cancel();
+      preview.current?.pause();
+      if (previewUrl.current) URL.revokeObjectURL(previewUrl.current);
+    };
+  }, []);
+  function stopPreview() {
+    preview.current?.pause();
+    setPreviewVoice("");
+  }
+  function cancel() {
+    cancelled.current = true;
+    engine.current.cancel();
+  }
+  function reset() {
+    stopPreview();
+    setLesson(fresh());
+    setConfirmed("");
+    setPreviewText("");
+    setRecording(undefined);
+    setPersistRecording(false);
+    setError("");
+    setNotice("");
+  }
+  async function loadFile(file: File) {
+    setImporting(true);
+    setError("");
+    try {
+      const text = await extractDocument(file);
+      update({ text, sentences: [], title: file.name.replace(/\.[^.]+$/, "") });
+      setConfirmed("");
+      setNotice(
+        "本文を取り込みました。読み上げ範囲を編集してから、文に分割してください。",
+      );
+    } catch (e) {
+      report(String(e));
+    } finally {
+      setImporting(false);
+    }
+  }
+  function replaceText(text: string) {
+    update({ text, sentences: [] });
+    setConfirmed("");
+    setFailed(null);
+  }
+  function split() {
+    const text = lesson.text.trim();
+    if (!text) {
+      report("本文を入力してください。");
+      return;
+    }
+    if (text.length > 50000) {
+      report("1教材の上限は50,000文字です。教材を分けてください。");
+      return;
+    }
+    update({ sentences: splitSentences(text, lesson.lang) });
+    setPreviewText("");
+    setFailed(null);
+    setNotice("文の区切りを確認してください。必要なら結合・再分割できます。");
+  }
+  function changeSentences(sentences: string[]) {
+    update({ sentences, text: sentences.join("\n") });
+    setFailed(null);
+  }
+  async function listen(voice: string) {
+    if (busy) return;
+    stopPreview();
+    setBusy(true);
+    setError("");
+    setProgress("試聴を準備中…");
+    cancelled.current = false;
+    try {
+      const text = previewText.trim() || lesson.sentences.slice(0, 2).join(" ");
+      if (!text)
+        throw Error("試聴原稿を入力するか、本文を文に分割してください。");
+      if (text.length > 400)
+        throw Error(
+          "試聴原稿は400文字までです。自然な文の区切りで短くしてください。",
+        );
+      const key = clipKey(text, voice, lesson.speed);
+      let clip = previewCache.current.get(key);
+      if (!clip) {
+        const result = await engine.current.generate(
+          text,
+          voice,
+          lesson.speed,
+          setProgress,
+        );
+        clip = { ...result, key, text };
+        previewCache.current.set(key, clip);
+      }
+      if (cancelled.current) return;
+      URL.revokeObjectURL(previewUrl.current);
+      previewUrl.current = URL.createObjectURL(
+        wavBlob(clip.samples, clip.rate),
+      );
+      preview.current!.src = previewUrl.current;
+      setPreviewVoice(voice);
+      await preview.current!.play();
+      setProgress("試聴音声を生成しました。");
+    } catch (e) {
+      report(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function generate() {
+    if (busy) return;
+    if (confirmed !== config) {
+      report("声と発話速度を確定してください。");
+      return;
+    }
+    stopPreview();
+    setBusy(true);
+    setError("");
+    setFailed(null);
+    cancelled.current = false;
+    const snapshot = lesson;
+    const cache = new Map(lesson.clips.map((c) => [c.key, c]));
+    try {
+      if (!snapshot.sentences.length)
+        throw Error("本文を文に分割してください。");
+      if (snapshot.sentences.some((s) => !s.trim()))
+        throw Error("空の文を削除してください。");
+      for (let i = 0; i < snapshot.sentences.length; i++) {
+        if (cancelled.current) break;
+        const text = snapshot.sentences[i];
+        const key = clipKey(text, snapshot.voice, snapshot.speed);
+        setProgress(`${i + 1} / ${snapshot.sentences.length} 文を生成中`);
+        if (cache.has(key)) continue;
+        try {
+          const result = await engine.current.generate(
+            text,
+            snapshot.voice,
+            snapshot.speed,
+            (msg) =>
+              setProgress(
+                `${i + 1} / ${snapshot.sentences.length} 文 · ${msg}`,
+              ),
+          );
+          if (cancelled.current) break;
+          if (
+            [
+              ...snapshot.sentences
+                .slice(0, i)
+                .map((t) =>
+                  cache.get(clipKey(t, snapshot.voice, snapshot.speed)),
+                ),
+            ].reduce((n, c) => n + (c ? c.samples.length / c.rate : 0), 0) +
+              result.samples.length / result.rate >
+            1200
+          )
+            throw Error("音声が20分を超えます。教材を分けてください。");
+          cache.set(key, { ...result, text, key });
+          setLesson((l) => ({ ...l, clips: [...cache.values()] }));
+        } catch (e) {
+          setFailed(i);
+          throw e;
+        }
+      }
+      if (!cancelled.current)
+        setProgress("全文の音声を生成しました。練習画面で再生できます。");
+    } catch (e) {
+      report(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function save() {
+    if (saving) return;
+    setSaving(true);
+    try {
+      await saveLesson({
+        ...lesson,
+        recording: persistRecording ? recording : undefined,
+        updated: Date.now(),
+      });
+      setLibrary(await listLessons());
+      setNotice("教材をこのブラウザーに保存しました。");
+      void navigator.storage?.persist?.();
+    } catch (e) {
+      report(String(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+  function open(item: Lesson) {
+    stopPreview();
+    setLesson(item);
+    setConfirmed("");
+    setRecording(item.recording);
+    setPersistRecording(!!item.recording);
+    setFailed(null);
+    setPreviewText("");
+    setError("");
+    setNotice("保存した教材を開きました。");
+  }
+  async function importAudio(file: File) {
+    if (file.size > 50 * 1024 * 1024) {
+      report("持ち込み音声は50 MBまでです。");
+      return;
+    }
+    if (
+      lesson.text &&
+      !confirm(
+        "持ち込み音声を新しい教材として開きます。未保存の編集内容は失われます。続けますか？",
+      )
+    )
+      return;
+    setImporting(true);
+    let ctx: AudioContext | undefined;
+    try {
+      ctx = new AudioContext();
+      const buffer = await ctx.decodeAudioData(await file.arrayBuffer());
+      if (buffer.duration > 1200) throw Error("持ち込み音声は20分までです。");
+      const mono = new Float32Array(buffer.length);
+      for (let c = 0; c < buffer.numberOfChannels; c++) {
+        const channel = buffer.getChannelData(c);
+        for (let i = 0; i < mono.length; i++)
+          mono[i] += channel[i] / buffer.numberOfChannels;
+      }
+      const text = "持ち込み音声（文の自動位置合わせなし）";
+      const item = fresh();
+      item.title = file.name;
+      item.text = text;
+      item.sentences = [text];
+      item.voice = "imported";
+      item.clips = [
+        {
+          text,
+          key: clipKey(text, "imported", 1),
+          samples: mono,
+          rate: buffer.sampleRate,
+        },
+      ];
+      stopPreview();
+      setLesson(item);
+      setRecording(undefined);
+      setConfirmed("");
+      setNotice(
+        "持ち込み音声を開きました。A–B区間で練習できます。本文の文単位対応はありません。",
+      );
+    } catch (e) {
+      report("音声を読み込めませんでした。 " + String(e));
+    } finally {
+      await ctx?.close();
+      setImporting(false);
+    }
+  }
+  return (
+    <>
+      <header className="page-header">
+        <a className="brand" href="./">
+          <img
+            src={new URL("../public/cl-logo.png", import.meta.url).href}
+            width="52"
+            height="52"
+            alt="COACHING-L公式CLロゴ"
+          />
+          <div>
+            <p className="brand-name">COACHING-L</p>
+            <h1>シャドーイング・スタジオ</h1>
+          </div>
+        </a>
+        <span className="header-note">自分のペースで、言葉を育てる。</span>
+      </header>
+      <main>
+        <div className="intro">
+          <span className="eyebrow">YOUR WORDS, YOUR PRACTICE</span>
+          <h2>
+            聴く。重ねる。
+            <br />
+            自分の言葉にする。
+          </h2>
+          <p>いつもの資料から、あなただけの語学練習を。</p>
+        </div>
+        <div className="status-banner">
+          <BookOpen size={20} />
+          <div>
+            <strong>開発プレビュー · まず短い原稿で声を試してください</strong>
+            <p>
+              英語・中国語の音声は、無料・登録不要の公開モデルを端末内で実行します。中国語の読み変換は試験対応です。多音字や声調、自然さは試聴で確認してください。スマートフォンでの生成は未検証です。
+            </p>
+          </div>
+        </div>
+        <nav className="steps" aria-label="使い方">
+          <span>
+            <b>1</b>資料と原稿
+          </span>
+          <ArrowRight size={16} />
+          <span>
+            <b>2</b>声を選ぶ
+          </span>
+          <ArrowRight size={16} />
+          <span>
+            <b>3</b>生成して練習
+          </span>
+        </nav>
+        {error && (
+          <div className="alert" role="alert">
+            <span>{error}</span>
+            <button className="text-button" onClick={() => setError("")}>
+              閉じる
+            </button>
+          </div>
+        )}
+        {notice && (
+          <p className="notice" role="status">
+            {notice}
+          </p>
+        )}
+        <div className="workspace">
+          <aside>
+            <section className="card library">
+              <div className="section-heading">
+                <h2>
+                  <BookOpen size={19} />
+                  教材ライブラリ
+                </h2>
+                <span className="tag">{library.length}件</span>
+              </div>
+              <button
+                className="new-button"
+                disabled={busy || importing}
+                onClick={reset}
+              >
+                <Plus size={18} />
+                新しい教材
+              </button>
+              {!library.length && (
+                <div className="empty">
+                  <BookOpen size={28} />
+                  <p>練習の積み重ねを、ここに。</p>
+                  <span>教材を保存すると一覧に表示されます。</span>
+                </div>
+              )}
+              {library.map((item) => (
+                <div
+                  className={`library-item ${item.id === lesson.id ? "selected" : ""}`}
+                  key={item.id}
+                >
+                  <button
+                    disabled={busy || importing}
+                    onClick={() => open(item)}
+                  >
+                    <strong>{item.title}</strong>
+                    <span>
+                      {item.lang === "en" ? "英語" : "中国語"} ·{" "}
+                      {item.sentences.length}文 ·{" "}
+                      {new Date(item.updated).toLocaleDateString("ja-JP")}
+                    </span>
+                  </button>
+                  <button
+                    aria-label={`${item.title}を削除`}
+                    disabled={busy || importing}
+                    className="icon-button"
+                    onClick={() => {
+                      if (
+                        confirm(
+                          `「${item.title}」をこのブラウザーから削除しますか？`,
+                        )
+                      )
+                        void deleteLesson(item.id)
+                          .then(() => listLessons())
+                          .then(setLibrary)
+                          .catch((e) => report(String(e)));
+                    }}
+                  >
+                    <Trash2 size={16} />
+                  </button>
+                </div>
+              ))}
+              <p className="small">
+                保存先はこの端末のブラウザー内（IndexedDB）です。履歴・サイトデータの削除や容量不足で失われる場合があります。大切な音声はダウンロードしてください。
+              </p>
+            </section>
+            <section className="card privacy">
+              <span className="eyebrow">PRIVATE BY DESIGN</span>
+              <h3>
+                資料も、録音も。
+                <br />
+                あなたの端末の中に。
+              </h3>
+              <p className="small">
+                本文や音声をサーバーへ送りません。音声モデルの初回取得時だけ、配布サイトへ通信します。
+              </p>
+              <details>
+                <summary>使い方と制約</summary>
+                <p className="small">
+                  初回のモデル取得は英語約92 MB・中国語約339
+                  MBに、実行ファイル等が加わります。合計は100
+                  MB以上、実行には数百MB以上のメモリーが必要です（メモリー使用量の正確な実測は未完了）。進捗は生成時に表示します。モデルはブラウザーのCache
+                  Storageに保存されますが、削除される場合があります。低メモリー端末・スマートフォンでの生成は未確認です。対応の検証対象は最新Chrome/Edge。Safari/Firefoxの生成は未検証です。WebAssembly対応が必要です。
+                </p>
+                <p className="small">
+                  サービス課金・アカウント・APIキー不要。アプリ側の上限は資料20
+                  MB・PDF200ページ・本文50,000文字・生成1文400文字・音声20分です。超過時は停止し、有料サービスへ切り替えません。話し方の感情指定には対応していません。
+                </p>
+              </details>
+            </section>
+          </aside>
+          <div className="main-column">
+            <section className="card">
+              <div className="section-heading">
+                <h2>01 資料を取り込む</h2>
+                <span className="tag">端末内で抽出</span>
+              </div>
+              <div className="row">
+                <label className="grow">
+                  教材名
+                  <input
+                    value={lesson.title}
+                    disabled={busy}
+                    maxLength={120}
+                    onChange={(e) => update({ title: e.target.value })}
+                  />
+                </label>
+                <label>
+                  練習する言語
+                  <select
+                    value={lesson.lang}
+                    disabled={busy}
+                    onChange={(e) => {
+                      update({
+                        lang: e.target.value as Lang,
+                        sentences: [],
+                        voice: e.target.value === "en" ? "af_heart" : "zf_001",
+                      });
+                      setConfirmed("");
+                      setPreviewText("");
+                    }}
+                  >
+                    <option value="en">英語 / English</option>
+                    <option value="zh">中国語 / 中文</option>
+                  </select>
+                </label>
+              </div>
+              <label
+                className={`drop-zone ${busy || importing ? "disabled" : ""}`}
+              >
+                <Upload size={25} />
+                <strong>
+                  {importing ? "読み込み中…" : "資料を選んで取り込む"}
+                </strong>
+                <span>Word（.docx）・PDF・テキスト（.txt）／最大20 MB</span>
+                <input
+                  aria-label="資料ファイル"
+                  type="file"
+                  accept=".docx,.pdf,.txt"
+                  disabled={busy || importing}
+                  onChange={(e) => {
+                    if (e.target.files?.[0]) void loadFile(e.target.files[0]);
+                    e.target.value = "";
+                  }}
+                />
+              </label>
+              <p className="small">
+                画像PDFのOCRは未対応です。文字を抽出できない資料は、本文を下に貼り付けてください。
+              </p>
+            </section>
+            <section className="card">
+              <div className="section-heading">
+                <h2>02 読み上げ原稿を整える</h2>
+                <span className="tag">
+                  {lesson.text.length.toLocaleString()}文字
+                </span>
+              </div>
+              <p className="muted">
+                読み上げたい部分だけ残し、見出しや注釈を編集してください。翻訳や要約、文字種による自動削除は行いません。
+              </p>
+              <label>
+                本文
+                <textarea
+                  aria-label="本文"
+                  ref={rawInput}
+                  value={lesson.text}
+                  disabled={busy}
+                  rows={10}
+                  placeholder={
+                    lesson.lang === "en"
+                      ? "What would you like to focus on today?\nTake a moment to reflect on your progress."
+                      : "今天，你想把注意力放在哪件事上？\n请给自己一点时间，想一想最近的进步。"
+                  }
+                  onChange={(e) => replaceText(e.target.value)}
+                />
+              </label>
+              <div className="toolbar">
+                <button disabled={busy || !lesson.text} onClick={split}>
+                  <FileText size={17} />
+                  文に分割する
+                </button>
+                <button
+                  className="small-button"
+                  disabled={busy || !lesson.text}
+                  onClick={() => {
+                    replaceText(
+                      lesson.text.replace(
+                        /([^\n])\n(?!\n)/g,
+                        lesson.lang === "en" ? "$1 " : "$1",
+                      ),
+                    );
+                    setNotice(
+                      "単独の改行を整理しました。単語のつながりを確認してください。",
+                    );
+                  }}
+                >
+                  改行を整理
+                </button>
+                <button
+                  className="small-button"
+                  disabled={busy || !lesson.text}
+                  onClick={() => {
+                    const el = rawInput.current!;
+                    if (el.selectionStart === el.selectionEnd) {
+                      report("本文で読み上げたい範囲を選択してください。");
+                      return;
+                    }
+                    replaceText(
+                      lesson.text.slice(el.selectionStart, el.selectionEnd),
+                    );
+                  }}
+                >
+                  選択範囲だけ残す
+                </button>
+              </div>
+              {lesson.sentences.length > 0 && (
+                <details open>
+                  <summary>
+                    文の区切りを確認（{lesson.sentences.length}文）
+                  </summary>
+                  <p className="small">
+                    各欄を直接編集できます。途中で分けるときは改行して「改行で再分割」。400文字を超える文は生成前に分割してください。
+                  </p>
+                  <div className="editing-list">
+                    {lesson.sentences.map((s, i) => (
+                      <div
+                        className={`editing-sentence ${failed === i ? "failed" : ""}`}
+                        key={i}
+                      >
+                        <span className="sentence-number">
+                          {String(i + 1).padStart(2, "0")}
+                          {lesson.clips.some(
+                            (c) =>
+                              c.key === clipKey(s, lesson.voice, lesson.speed),
+                          ) && <Check size={13} />}
+                        </span>
+                        <textarea
+                          aria-label={`${i + 1}文目の原稿`}
+                          disabled={busy}
+                          rows={2}
+                          value={s}
+                          onChange={(e) =>
+                            changeSentences(
+                              lesson.sentences.map((x, j) =>
+                                i === j ? e.target.value : x,
+                              ),
+                            )
+                          }
+                        />
+                        <div className="toolbar">
+                          <button
+                            className="small-button"
+                            disabled={busy || i === lesson.sentences.length - 1}
+                            onClick={() =>
+                              changeSentences(
+                                lesson.sentences.flatMap((x, j) =>
+                                  j === i
+                                    ? [
+                                        x +
+                                          (lesson.lang === "en" ? " " : "") +
+                                          lesson.sentences[j + 1],
+                                      ]
+                                    : j === i + 1
+                                      ? []
+                                      : [x],
+                                ),
+                              )
+                            }
+                          >
+                            次と結合
+                          </button>
+                          <button
+                            className="small-button"
+                            disabled={busy || !s.includes("\n")}
+                            onClick={() =>
+                              changeSentences(
+                                lesson.sentences.flatMap((x, j) =>
+                                  j === i
+                                    ? x
+                                        .split("\n")
+                                        .map((t) => t.trim())
+                                        .filter(Boolean)
+                                    : [x],
+                                ),
+                              )
+                            }
+                          >
+                            改行で再分割
+                          </button>
+                          <button
+                            className="icon-button"
+                            aria-label={`${i + 1}文目を削除`}
+                            disabled={busy}
+                            onClick={() =>
+                              changeSentences(
+                                lesson.sentences.filter((_, j) => j !== i),
+                              )
+                            }
+                          >
+                            <Trash2 size={15} />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              )}
+            </section>
+            <section className="card">
+              <div className="section-heading">
+                <h2>03 声を聴き比べる</h2>
+                <span className="tag">
+                  {lesson.lang === "en"
+                    ? "Kokoro 英語"
+                    : "Kokoro 中国語 · 試験対応"}
+                </span>
+              </div>
+              <>
+                <p className="muted">
+                  同じ原稿で、英語は5声、中国語は3声を聴き比べられます。試聴して、発音や区切り、好みに合う声か確認してください。
+                </p>
+                <label>
+                  試聴原稿（400文字以内・空欄なら先頭2文）
+                  <textarea
+                    rows={3}
+                    value={previewText}
+                    disabled={busy}
+                    onChange={(e) => setPreviewText(e.target.value)}
+                    placeholder={
+                      lesson.sentences.slice(0, 2).join(" ") ||
+                      "本文を分割するか、短い試聴原稿を入力してください。"
+                    }
+                  />
+                </label>
+                <label className="inline">
+                  生成時の発話速度
+                  <select
+                    value={lesson.speed}
+                    disabled={busy}
+                    onChange={(e) => {
+                      update({ speed: +e.target.value });
+                      setConfirmed("");
+                    }}
+                  >
+                    {[0.8, 0.9, 1, 1.1, 1.2].map((n) => (
+                      <option key={n} value={n}>
+                        {n}×
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <div className="voice-grid">
+                  {availableVoices.map((voice, i) => (
+                    <div
+                      className={`voice ${lesson.voice === voice.id ? "chosen" : ""}`}
+                      key={voice.id}
+                    >
+                      <label>
+                        <input
+                          type="radio"
+                          name="voice"
+                          checked={lesson.voice === voice.id}
+                          disabled={busy}
+                          onChange={() => {
+                            update({ voice: voice.id });
+                            setConfirmed("");
+                          }}
+                        />
+                        <span className="voice-avatar">
+                          {String(i + 1).padStart(2, "0")}
+                        </span>
+                        <span>
+                          <strong>{voice.name}</strong>
+                          <small>{voice.detail}</small>
+                        </span>
+                      </label>
+                      <button
+                        className="small-button"
+                        disabled={busy}
+                        onClick={() => void listen(voice.id)}
+                      >
+                        <Headphones size={15} />
+                        {previewVoice === voice.id ? "もう一度聴く" : "試聴"}
+                      </button>
+                    </div>
+                  ))}
+                </div>
+                <audio
+                  ref={preview}
+                  controls={!!previewVoice}
+                  onEnded={() => setPreviewVoice("")}
+                />
+                <p className="small">
+                  初回はHugging
+                  Faceからモデル、jsDelivrから実行ファイルを取得します。本文は外部送信せず、端末内のWebAssemblyで生成します。音声広告やサービス名を挿入する処理はありません。初回取得には時間がかかります。
+                </p>
+                <button
+                  disabled={
+                    busy || !availableVoices.some((v) => v.id === lesson.voice)
+                  }
+                  onClick={() => {
+                    stopPreview();
+                    setConfirmed(config);
+                    setNotice(
+                      "声と発話速度を確定しました。全文生成は次のボタンで開始します。",
+                    );
+                  }}
+                >
+                  <Check size={18} />
+                  {confirmed === config
+                    ? "この声と設定で確定済み"
+                    : "この声と設定で確定"}
+                </button>
+                <div className="generate-row">
+                  <div>
+                    <strong>全文を音声にする</strong>
+                    <p className="small">
+                      {readyCount} / {lesson.sentences.length}文の音声を保持 ·
+                      成功した文は再利用
+                    </p>
+                  </div>
+                  <button
+                    className="primary"
+                    disabled={
+                      busy || confirmed !== config || !lesson.sentences.length
+                    }
+                    onClick={() => void generate()}
+                  >
+                    {busy ? (
+                      <LoaderCircle className="spin" size={18} />
+                    ) : (
+                      <ArrowRight size={18} />
+                    )}{" "}
+                    {failed !== null ? "失敗した文から再試行" : "全文生成"}
+                  </button>
+                </div>
+                {failed !== null && (
+                  <p className="small">
+                    {failed + 1}
+                    文目で停止しました。原因を解消して再試行すると、成功済み音声を再利用します。
+                  </p>
+                )}
+              </>
+              {(busy || progress) && (
+                <div className="progress" role="status">
+                  <span>{progress}</span>
+                  {busy && (
+                    <button className="small-button" onClick={cancel}>
+                      生成を中止
+                    </button>
+                  )}
+                </div>
+              )}
+            </section>
+            <section className="card compact">
+              <details>
+                <summary>手元の音声で練習する</summary>
+                <p className="small">
+                  生成できない場合の代替として、自分が利用できるMP3・WAVなどを読み込めます。音声と本文の自動位置合わせはありません。1つの音声としてA–B練習とMP3出力ができます。最大50
+                  MB・20分です。
+                </p>
+                <input
+                  aria-label="練習用音声"
+                  type="file"
+                  accept="audio/*"
+                  disabled={busy || importing}
+                  onChange={(e) => {
+                    if (e.target.files?.[0])
+                      void importAudio(e.target.files[0]);
+                    e.target.value = "";
+                  }}
+                />
+              </details>
+            </section>
+            <Practice
+              key={lesson.id}
+              lesson={lesson}
+              clips={clips}
+              update={update}
+              error={report}
+              recording={recording}
+              setRecording={setRecording}
+            />
+            <section className="card save-card">
+              <div>
+                <h2>教材を保存する</h2>
+                <p className="small">
+                  原稿・区切り・生成音声・声・練習設定を、このブラウザーに保存します。
+                </p>
+                <label className="checkbox">
+                  <input
+                    type="checkbox"
+                    checked={persistRecording}
+                    onChange={(e) => setPersistRecording(e.target.checked)}
+                  />
+                  自分の録音も教材と一緒に保存する
+                </label>
+              </div>
+              <button
+                className="primary"
+                disabled={busy || saving || importing}
+                onClick={() => void save()}
+              >
+                <Save size={18} />
+                {saving ? "保存中…" : "教材を保存"}
+              </button>
+            </section>
+          </div>
+        </div>
+      </main>
+      <footer>
+        COACHING-L<span>自分のペースで、自分の言葉に。</span>
+      </footer>
+    </>
+  );
+}
