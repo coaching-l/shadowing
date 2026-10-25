@@ -23,7 +23,7 @@ npm run test:e2e    # Chromium、ffmpeg、ffprobeが必要
 
 ブラウザーテストはシステムの `/usr/bin/chromium` があれば使用します。ない場合は `npx playwright install chromium` で導入してください。`PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` でも指定できます。
 
-公開デプロイ、課金、アカウント作成、APIキー登録は行っていません。静的ホスティングは可能な構成ですが、公開は別作業です。GitHub Pages上でも音声生成は利用端末内で動きます。
+ユーザーの許可に基づきGitHub Pagesの試験公開用ファイルを準備しています。手順は [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) を参照してください。GitHub Pages上でも音声生成は利用端末内で動きます。課金、アカウント作成、音声APIキー登録は不要です。
 
 ## 利用の流れ
 

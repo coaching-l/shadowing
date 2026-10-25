@@ -15,9 +15,9 @@
 - Kokoroモデル: 上流READMEによるApache-2.0。取得できていないモデルカード・各配布ファイルの通知は実取得時の再確認対象です。
 - Mammoth: BSD-2-Clause、idb: ISC。
 - `@breezystack/lamejs@1.2.7`: LGPL-3.0。MP3エンコーダーは別Workerのモジュールとして使用し、変更していません。ライセンス本文を `public/licenses/lamejs-LGPL-3.0.txt` に同梱。配布元・ソース: https://github.com/shijinyu/lamejs 、正確なパッケージ: https://registry.npmjs.org/@breezystack/lamejs/-/lamejs-1.2.7.tgz 。本アプリは依存を分離してnpmから再ビルドできます。
-- phonemizer: パッケージ表記はApache-2.0。内部のeSpeak NG由来コンポーネントにはGPL系の通知もあるため、公開配布前に内包コード・対応ソースとライセンス通知を確認する必要があります。音素化に使用し、eSpeakの合成音声を本アプリの声として提供しません。出典: https://github.com/xenova/phonemizer 、https://github.com/espeak-ng/espeak-ng 。
+- phonemizer: パッケージ表記はApache-2.0。内部のeSpeak NG由来コンポーネントにはGPL系の通知もあるため、配信版にはApache-2.0とGPL-3.0の通知、パッケージのライセンス、上流の音素化コード・eSpeak NGソースへの参照を含めます。音素化に使用し、eSpeakの合成音声を本アプリの声として提供しません。出典: https://github.com/xenova/phonemizer.js 、https://github.com/espeak-ng/espeak-ng 。
 
-ライセンス文は各npmパッケージ内のLICENSEも参照してください。公開配布は実施していません。録音・教材・音声の権利はユーザー側で確認してください。
+ライセンス文は各npmパッケージ内のLICENSEも参照してください。ユーザーの許可に基づき、試験公開用の配信ファイルを準備しました。公開版のフッターからライセンス一覧・ソースを参照できます。録音・教材・音声の権利はユーザー側で確認してください。
 
 ## 中国語実装の追加依存
 

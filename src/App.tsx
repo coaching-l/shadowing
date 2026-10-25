@@ -911,6 +911,9 @@ export default function App() {
       </main>
       <footer>
         COACHING-L<span>自分のペースで、自分の言葉に。</span>
+        <a href="./licenses/" target="_blank" rel="noreferrer">
+          ライセンスとソース
+        </a>
       </footer>
     </>
   );
