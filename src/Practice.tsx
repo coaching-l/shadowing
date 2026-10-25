@@ -13,6 +13,8 @@ import { formatTime, mergeAudio, NO_GAP, validRange, wavBlob } from "./core";
 import type { Clip } from "./core";
 import type { Lesson, Recording } from "./storage";
 import { download, encodeMP3, zipMP3 } from "./export";
+import Timeline from "./Timeline";
+const PLAYBACK_RATES = Array.from({ length: 31 }, (_, i) => (50 + i * 5) / 100);
 type Props = {
   lesson: Lesson;
   clips: Clip[];
@@ -69,8 +71,7 @@ export default function Practice({
     [exports, setExports] = useState<{ name: string; blob: Blob }[]>([]),
     [group, setGroup] = useState(10),
     [modelVolume, setModelVolume] = useState(1),
-    [ownVolume, setOwnVolume] = useState(1),
-    [selection, setSelection] = useState<number[]>([]);
+    [ownVolume, setOwnVolume] = useState(1);
   const priorData = useRef(data),
     gapWaiting = useRef(false);
   const duration = data ? data.samples.length / data.rate : 0;
@@ -131,9 +132,8 @@ export default function Practice({
     priorData.current = data;
     stop();
     setExports([]);
-    setSelection([]);
     setTime(0);
-    if (a !== 0 || b !== 0) update({ a: 0, b: 0 });
+    if (a !== 0 || b !== 0 || loop) update({ a: 0, b: 0, loop: false });
     setRecording(undefined);
   }, [data]);
   useEffect(() => {
@@ -472,18 +472,23 @@ export default function Practice({
           <span>{formatTime(time)}</span>
           <span>{formatTime(duration)}</span>
         </div>
-        <input
-          aria-label="再生位置"
-          type="range"
-          min="0"
-          max={duration || 1}
-          step="0.01"
-          value={Math.min(time, duration)}
-          disabled={!data}
-          onChange={(e) => {
+        <Timeline
+          samples={data?.samples ?? null}
+          sampleRate={data?.rate ?? 24000}
+          duration={duration}
+          time={time}
+          a={a}
+          b={b}
+          disabled={!data || capturing}
+          onAdjustStart={() => stop()}
+          onRangeChange={(range) => {
             stop();
-            audio.current!.currentTime = +e.target.value;
-            setTime(+e.target.value);
+            update({ ...range, loop: true });
+          }}
+          onSeek={(next) => {
+            stop();
+            audio.current!.currentTime = next;
+            setTime(next);
           }}
         />
         <div className="transport">
@@ -519,9 +524,9 @@ export default function Practice({
         <label className="inline">
           再生速度（高さを維持）
           <select value={rate} onChange={(e) => setRate(+e.target.value)}>
-            {[0.5, 0.75, 1, 1.25, 1.5, 2].map((n) => (
+            {PLAYBACK_RATES.map((n) => (
               <option key={n} value={n}>
-                {n}×
+                {n.toFixed(2)}×
               </option>
             ))}
           </select>
@@ -531,49 +536,41 @@ export default function Practice({
         <h3>
           <Repeat2 size={18} /> A–B 区間リピート
         </h3>
-        <div className="row">
-          <label>
-            開始 A（秒）
-            <input
-              aria-label="開始 A（秒）"
-              type="number"
-              min="0"
-              max={duration}
-              step="0.01"
-              value={a}
-              onChange={(e) => update({ a: +e.target.value })}
-            />
-            <button
-              className="small-button"
-              disabled={!data}
-              onClick={() => update({ a: time })}
-            >
-              現在位置をAに
-            </button>
-          </label>
-          <label>
-            終了 B（秒）
-            <input
-              aria-label="終了 B（秒）"
-              type="number"
-              min="0"
-              max={duration}
-              step="0.01"
-              value={b}
-              onChange={(e) => update({ b: +e.target.value })}
-            />
-            <button
-              className="small-button"
-              disabled={!data}
-              onClick={() => update({ b: time })}
-            >
-              現在位置をBに
-            </button>
-          </label>
-        </div>
+        <details className="range-numbers">
+          <summary>時刻を数字で調整</summary>
+          <div className="row">
+            <label>
+              開始 A（秒）
+              <input
+                aria-label="開始 A（秒）"
+                type="number"
+                min="0"
+                max={duration}
+                step="0.01"
+                value={a}
+                onChange={(e) => update({ a: +e.target.value })}
+              />
+            </label>
+            <label>
+              終了 B（秒）
+              <input
+                aria-label="終了 B（秒）"
+                type="number"
+                min="0"
+                max={duration}
+                step="0.01"
+                value={b}
+                onChange={(e) => update({ b: +e.target.value })}
+              />
+            </label>
+          </div>
+        </details>
         <p className="small">
-          A {formatTime(a)} → B {formatTime(b)}{" "}
-          {b > 0 && !validRange(a, b, duration) && "／区間を確認してください"}
+          {validRange(a, b, duration)
+            ? `A ${formatTime(a)} → B ${formatTime(b)}`
+            : a !== 0 || b !== 0
+              ? "0 ≦ A < B ≦ 音声の長さにしてください。"
+              : "ゲージのA・Bを動かして、繰り返したい範囲を指定してください。"}
         </p>
         <div className="row">
           <label>
@@ -621,52 +618,38 @@ export default function Practice({
             onClick={() => {
               setLoop(false);
               update({ a: 0, b: 0 });
-              setSelection([]);
             }}
           >
             区間を解除
           </button>
         </div>
         <p className="small">
-          文のチェックで連続区間を選べます。背景に移ると、区間ずれを防ぐため再生を停止します。
+          ゲージのA・Bを動かすと、区間リピートがオンになります。背景に移ると、区間ずれを防ぐため再生を停止します。
         </p>
       </div>
-      <div className="sentence-list">
-        {data?.spans.map((s, i) => (
-          <div key={i} className={`sentence ${active === i ? "active" : ""}`}>
-            <input
-              aria-label={`${i + 1}文目を区間に含める`}
-              type="checkbox"
-              checked={selection.includes(i)}
-              onChange={(e) => {
-                const picked = e.target.checked
-                  ? [...selection, i]
-                  : selection.filter((x) => x !== i);
-                if (!picked.length) {
-                  setSelection([]);
-                  update({ a: 0, b: 0 });
-                  return;
-                }
-                const lo = Math.min(...picked),
-                  hi = Math.max(...picked);
-                setSelection(
-                  Array.from({ length: hi - lo + 1 }, (_, j) => lo + j),
-                );
-                update({ a: data.spans[lo].start, b: data.spans[hi].end });
-              }}
-            />
-            <button
-              disabled={capturing}
-              onClick={() => startRange(s.start, duration, false)}
-            >
-              <span className="sentence-number">
-                {String(i + 1).padStart(2, "0")} · {formatTime(s.start)}
-              </span>
-              {s.text}
-            </button>
+      {data && (
+        <details className="transcript">
+          <summary>本文を見る（文を押すとその位置から再生）</summary>
+          <div className="sentence-list">
+            {data.spans.map((s, i) => (
+              <div
+                key={i}
+                className={`sentence ${active === i ? "active" : ""}`}
+              >
+                <button
+                  disabled={capturing}
+                  onClick={() => startRange(s.start, duration, false)}
+                >
+                  <span className="sentence-number">
+                    {String(i + 1).padStart(2, "0")} · {formatTime(s.start)}
+                  </span>
+                  {s.text}
+                </button>
+              </div>
+            ))}
           </div>
-        ))}
-      </div>
+        </details>
+      )}
       <details>
         <summary>自分の声を録音して比較</summary>
         <p className="small">

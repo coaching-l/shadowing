@@ -924,3 +924,162 @@ footer span {
     font-size: 12px;
   }
 }
+
+/* Shared A/B gauge interaction and marker arrangement from audio-loop-player. */
+.interval-gauge {
+  position: relative;
+  height: 150px;
+  margin-top: 6px;
+}
+.gauge-rail {
+  position: absolute;
+  left: 22px;
+  right: 22px;
+  top: 0;
+  bottom: 0;
+  pointer-events: none;
+}
+.gauge-waveform {
+  position: absolute;
+  top: 4px;
+  width: 100%;
+  height: 48px;
+  fill: var(--input-border);
+  opacity: 0.6;
+}
+.gauge-selection {
+  position: absolute;
+  top: 4px;
+  height: 48px;
+  background: var(--gold);
+  opacity: 0.25;
+  border-left: 1px solid var(--gold-label);
+  border-right: 1px solid var(--gold-label);
+}
+.gauge-playhead {
+  position: absolute;
+  top: 4px;
+  height: 48px;
+  border-left: 2px solid var(--accent);
+}
+.gauge-marker {
+  position: absolute;
+  transform: translateX(-50%);
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 1px solid var(--accent);
+  background: var(--surface);
+  color: var(--accent);
+  font-weight: 700;
+  touch-action: none;
+  pointer-events: auto;
+  cursor: ew-resize;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.gauge-marker-a {
+  top: 58px;
+}
+.gauge-marker-b {
+  top: 104px;
+  color: var(--gold-label);
+  border-color: var(--gold-label);
+}
+.gauge-marker::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: 100%;
+  height: 30px;
+  border-left: 1px solid currentColor;
+  pointer-events: none;
+}
+.gauge-marker-b::before {
+  height: 76px;
+}
+.gauge-marker:active {
+  background: var(--soft);
+}
+.gauge-seek {
+  position: absolute;
+  top: 6px;
+  left: 10px;
+  width: calc(100% - 20px) !important;
+  height: 44px;
+  margin: 0;
+  background: transparent;
+  appearance: none;
+  -webkit-appearance: none;
+}
+.gauge-seek::-webkit-slider-runnable-track {
+  height: 8px;
+  background: transparent;
+}
+.gauge-seek::-webkit-slider-thumb {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 24px;
+  height: 24px;
+  margin-top: -8px;
+  border: 2px solid var(--surface);
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+.gauge-seek::-moz-range-track {
+  height: 8px;
+  background: transparent;
+}
+.gauge-seek::-moz-range-thumb {
+  width: 20px;
+  height: 20px;
+  border: 2px solid var(--surface);
+  border-radius: 50%;
+  background: var(--accent);
+}
+.gauge-legend {
+  display: flex;
+  justify-content: space-between;
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+  color: var(--heading);
+  margin-top: 6px;
+}
+.gauge-tools {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 8px 0;
+}
+.gauge-zoom {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.gauge-tools .text-button {
+  font-size: 14px;
+  min-height: 44px;
+}
+.gauge-help {
+  margin-bottom: 0;
+}
+.range-numbers {
+  margin-top: 12px;
+  border: 0;
+  padding-top: 0;
+}
+.gauge-disabled {
+  opacity: 0.45;
+}
+.gauge-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 12px;
+}
+.gauge-actions button {
+  flex: 1;
+  font-size: 14px;
+}

@@ -133,6 +133,7 @@ test("実MP3の持ち込み・再生・A–B・録音・MP3/ZIP出力・復元",
       ),
   ).toBe(true);
   await page.getByRole("button", { name: "一時停止", exact: true }).click();
+  await page.getByText("時刻を数字で調整", { exact: true }).click();
   await page.getByLabel("開始 A（秒）", { exact: true }).fill("0.1");
   await page.getByLabel("終了 B（秒）", { exact: true }).fill("0.5");
   await page.getByLabel("区間の間の無音（秒）").fill("0.1");
@@ -341,13 +342,11 @@ test("PDFを取り込み声を確定すれば手動の文分割なしで全文�
   pdf
     .addPage()
     .drawText("Take a deep breath. What matters to you today?", { font });
-  await page
-    .getByLabel("資料ファイル")
-    .setInputFiles({
-      name: "english-practice.pdf",
-      mimeType: "application/pdf",
-      buffer: Buffer.from(await pdf.save()),
-    });
+  await page.getByLabel("資料ファイル").setInputFiles({
+    name: "english-practice.pdf",
+    mimeType: "application/pdf",
+    buffer: Buffer.from(await pdf.save()),
+  });
   await expect(page.getByLabel("本文", { exact: true })).toHaveValue(
     /Take a deep breath/,
   );
@@ -372,4 +371,210 @@ test("PDFを取り込み声を確定すれば手動の文分割なしで全文�
   await expect(
     page.getByRole("button", { name: "失敗した文から再試行", exact: true }),
   ).toBeEnabled();
+});
+
+test("ゲージのA–Bドラッグ・拡大・0.05刻みの速度と区間の保存復元", async ({
+  page,
+}) => {
+  await mkdir("/tmp/shadowing-check", { recursive: true });
+  execFileSync(
+    "ffmpeg",
+    [
+      "-y",
+      "-f",
+      "lavfi",
+      "-i",
+      "sine=frequency=440:duration=12",
+      "-ar",
+      "24000",
+      "/tmp/shadowing-check/gauge-practice.wav",
+    ],
+    { stdio: "ignore" },
+  );
+  await page.goto("/");
+  await page.getByText("手元の音声で練習する", { exact: true }).click();
+  await page
+    .getByLabel("練習用音声")
+    .setInputFiles("/tmp/shadowing-check/gauge-practice.wav");
+  await expect(page.getByText("1文の音声", { exact: true })).toBeVisible();
+  const a = page.getByRole("slider", { name: "ゲージで開始点Aを調整" }),
+    b = page.getByRole("slider", { name: "ゲージで終了点Bを調整" });
+  async function drag(marker: typeof a, fraction: number) {
+    await marker.scrollIntoViewIfNeeded();
+    const handle = await marker.boundingBox(),
+      rail = await page.locator(".gauge-rail").boundingBox();
+    if (!handle || !rail) throw Error("Gauge missing");
+    await page.mouse.move(
+      handle.x + handle.width / 2,
+      handle.y + handle.height / 2,
+    );
+    await page.mouse.down();
+    await page.mouse.move(
+      rail.x + rail.width * fraction,
+      handle.y + handle.height / 2,
+      { steps: 12 },
+    );
+    await page.mouse.up();
+  }
+  await drag(a, 0.2);
+  await drag(b, 0.75);
+  expect(+(await a.getAttribute("aria-valuenow"))!).toBeCloseTo(2.4, 1);
+  expect(+(await b.getAttribute("aria-valuenow"))!).toBeCloseTo(9, 1);
+  await expect(page.getByLabel("区間リピート")).toBeChecked();
+  await expect(page.getByLabel(/文目を区間に含める/)).toHaveCount(0);
+  await drag(a, 1);
+  expect(+(await a.getAttribute("aria-valuenow"))!).toBeLessThan(
+    +(await b.getAttribute("aria-valuenow"))!,
+  );
+  await drag(a, 0.2);
+  await a.focus();
+  await a.press("ArrowRight");
+  expect(+(await a.getAttribute("aria-valuenow"))!).toBeCloseTo(2.5, 1);
+  await page
+    .getByRole("button", { name: "区間に合わせる", exact: true })
+    .click();
+  await expect(page.getByText(/を表示中/)).toBeVisible();
+  await page.getByRole("button", { name: "全体を表示", exact: true }).click();
+  const beforeA = await a.getAttribute("aria-valuenow"),
+    beforeB = await b.getAttribute("aria-valuenow");
+  const speed = page.getByLabel("再生速度（高さを維持）");
+  await expect(speed.locator("option")).toHaveCount(31);
+  expect(
+    await speed
+      .locator("option")
+      .evaluateAll((options) =>
+        options.map((o) => (o as HTMLOptionElement).value),
+      ),
+  ).toEqual(Array.from({ length: 31 }, (_, i) => String((50 + i * 5) / 100)));
+  for (const rate of [".55", "1.05", "2"]) {
+    await speed.selectOption(String(+rate));
+    expect(
+      await page
+        .locator(".practice audio")
+        .first()
+        .evaluate((a) => ({ rate: a.playbackRate, pitch: a.preservesPitch })),
+    ).toEqual({ rate: +rate, pitch: true });
+    expect(await a.getAttribute("aria-valuenow")).toBe(beforeA);
+    expect(await b.getAttribute("aria-valuenow")).toBe(beforeB);
+  }
+  await speed.selectOption("1.05");
+  await page.getByRole("button", { name: "教材を保存", exact: true }).click();
+  await expect(page.getByRole("status")).toContainText(
+    "教材をこのブラウザーに保存しました",
+  );
+  await page.reload();
+  await page.getByRole("button", { name: /gauge-practice.wav 英語/ }).click();
+  await expect(a).toHaveAttribute("aria-valuenow", beforeA!);
+  await expect(b).toHaveAttribute("aria-valuenow", beforeB!);
+  await expect(speed).toHaveValue("1.05");
+  await expect(page.getByLabel("区間リピート")).toBeChecked();
+  await a.focus();
+  await a.press("Home");
+  await b.focus();
+  await b.press("Home");
+  for (let i = 0; i < 5; i++) await b.press("ArrowRight");
+  await page.getByLabel("区間の間の無音（秒）").fill("0.05");
+  await page.getByLabel("繰り返し回数").selectOption("3");
+  await page.getByRole("button", { name: "再生", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "一時停止", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "再生", exact: true }),
+  ).toBeVisible({ timeout: 5000 });
+  await expect(page.getByText(/区間リピート.*3回目/)).toBeVisible();
+  expect(
+    await page
+      .locator(".practice audio")
+      .first()
+      .evaluate((a) => a.currentTime),
+  ).toBeCloseTo(+(await b.getAttribute("aria-valuenow"))!, 1);
+
+  await page
+    .getByRole("button", { name: "リピーティング", exact: true })
+    .click();
+  await expect(page.getByLabel("区間リピート")).not.toBeChecked();
+  await expect(page.getByLabel("区間リピート")).toBeDisabled();
+  await page.getByRole("button", { name: "再生", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "一時停止", exact: true }),
+  ).toBeVisible();
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBe(true);
+});
+
+test.describe("タッチ操作のゲージ", () => {
+  test.use({
+    viewport: { width: 390, height: 844 },
+    isMobile: true,
+    hasTouch: true,
+  });
+  test("スマートフォン幅でAとBを指で動かせる", async ({ page, context }) => {
+    await mkdir("/tmp/shadowing-check", { recursive: true });
+    execFileSync(
+      "ffmpeg",
+      [
+        "-y",
+        "-f",
+        "lavfi",
+        "-i",
+        "sine=frequency=440:duration=10",
+        "-ar",
+        "24000",
+        "/tmp/shadowing-check/touch-gauge.wav",
+      ],
+      { stdio: "ignore" },
+    );
+    await page.goto("/");
+    await page.getByText("手元の音声で練習する", { exact: true }).click();
+    await page
+      .getByLabel("練習用音声")
+      .setInputFiles("/tmp/shadowing-check/touch-gauge.wav");
+    await expect(page.getByText("1文の音声", { exact: true })).toBeVisible();
+    const cdp = await context.newCDPSession(page);
+    for (const [label, fraction] of [
+      ["ゲージで開始点Aを調整", 0.2],
+      ["ゲージで終了点Bを調整", 0.7],
+    ] as const) {
+      const marker = page.getByRole("slider", { name: label });
+      await marker.scrollIntoViewIfNeeded();
+      const box = await marker.boundingBox(),
+        rail = await page.locator(".gauge-rail").boundingBox();
+      if (!box || !rail) throw Error("Gauge missing");
+      const x = box.x + box.width / 2,
+        y = box.y + box.height / 2;
+      await cdp.send("Input.dispatchTouchEvent", {
+        type: "touchStart",
+        touchPoints: [{ x, y }],
+      });
+      await cdp.send("Input.dispatchTouchEvent", {
+        type: "touchMove",
+        touchPoints: [{ x: rail.x + rail.width * fraction, y }],
+      });
+      await cdp.send("Input.dispatchTouchEvent", {
+        type: "touchEnd",
+        touchPoints: [],
+      });
+    }
+    expect(
+      +(await page
+        .getByRole("slider", { name: "ゲージで開始点Aを調整" })
+        .getAttribute("aria-valuenow"))!,
+    ).toBeCloseTo(2, 1);
+    expect(
+      +(await page
+        .getByRole("slider", { name: "ゲージで終了点Bを調整" })
+        .getAttribute("aria-valuenow"))!,
+    ).toBeCloseTo(7, 1);
+    await expect(page.getByLabel("区間リピート")).toBeChecked();
+    await page.screenshot({
+      path: "/tmp/shadowing-touch-gauge.png",
+      fullPage: true,
+    });
+    await cdp.detach();
+  });
 });
