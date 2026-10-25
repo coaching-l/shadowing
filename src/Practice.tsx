@@ -14,7 +14,6 @@ import type { Clip } from "./core";
 import type { Lesson, Recording } from "./storage";
 import { download, encodeMP3, zipMP3 } from "./export";
 import Timeline from "./Timeline";
-const PLAYBACK_RATES = Array.from({ length: 31 }, (_, i) => (50 + i * 5) / 100);
 type Props = {
   lesson: Lesson;
   clips: Clip[];
@@ -521,16 +520,28 @@ export default function Practice({
             <SkipForward size={22} />
           </button>
         </div>
-        <label className="inline">
-          再生速度（高さを維持）
-          <select value={rate} onChange={(e) => setRate(+e.target.value)}>
-            {PLAYBACK_RATES.map((n) => (
-              <option key={n} value={n}>
-                {n.toFixed(2)}×
-              </option>
-            ))}
-          </select>
-        </label>
+        <div className="speed-section">
+          <div className="speed-label">
+            <label htmlFor="playback-speed">再生速度（高さを維持）</label>
+            <output htmlFor="playback-speed">{rate.toFixed(2)}×</output>
+          </div>
+          <input
+            id="playback-speed"
+            type="range"
+            min="0.5"
+            max="2"
+            step="0.05"
+            value={rate}
+            onChange={(e) => setRate(+e.target.value)}
+          />
+          <div className="speed-scale">
+            <span>0.5×（ゆっくり）</span>
+            <button className="text-button" onClick={() => setRate(1)}>
+              1.0×に戻す
+            </button>
+            <span>2.0×（速い）</span>
+          </div>
+        </div>
       </div>
       <div className="inset">
         <h3>

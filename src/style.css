@@ -1083,3 +1083,37 @@ footer span {
   flex: 1;
   font-size: 14px;
 }
+.speed-section {
+  margin-top: 20px;
+}
+.speed-label {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.speed-label output {
+  font-weight: 700;
+  color: var(--heading);
+  font-variant-numeric: tabular-nums;
+  min-width: 65px;
+  text-align: right;
+}
+.speed-section input[type="range"] {
+  min-height: 44px;
+  margin: 0;
+  cursor: pointer;
+}
+.speed-scale {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.speed-scale .text-button {
+  font-size: 13px;
+  min-height: 44px;
+}

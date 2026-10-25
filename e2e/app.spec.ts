@@ -3,6 +3,17 @@ import { zipSync, strToU8, unzipSync } from "fflate";
 import { PDFDocument, StandardFonts } from "pdf-lib";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
+async function setPlaybackSpeed(
+  page: import("@playwright/test").Page,
+  value: number,
+) {
+  const slider = page.getByRole("slider", { name: "再生速度（高さを維持）" });
+  await slider.focus();
+  await slider.press("Home");
+  for (let i = 0; i < Math.round((value - 0.5) / 0.05); i++)
+    await slider.press("ArrowRight");
+}
+
 test("実ファイルの資料抽出・編集・保存復元・言語切替・レスポンシブ", async ({
   page,
 }) => {
@@ -32,7 +43,7 @@ test("実ファイルの資料抽出・編集・保存復元・言語切替・�
   await page.getByRole("button", { name: "改行で再分割" }).first().click();
   await expect(page.getByLabel("2文目の原稿")).toBeVisible();
   await page.getByRole("button", { name: "教材を保存", exact: true }).click();
-  await expect(page.getByRole("status")).toContainText(
+  await expect(page.locator(".notice[role=status]")).toContainText(
     "教材をこのブラウザーに保存しました",
   );
   await page.reload();
@@ -139,7 +150,7 @@ test("実MP3の持ち込み・再生・A–B・録音・MP3/ZIP出力・復元",
   await page.getByLabel("区間の間の無音（秒）").fill("0.1");
   await page.getByLabel("繰り返し回数").selectOption("3");
   await page.getByLabel("区間リピート").check();
-  await page.getByLabel("再生速度（高さを維持）").selectOption("1.5");
+  await setPlaybackSpeed(page, 1.5);
   await page.getByRole("button", { name: "再生", exact: true }).click();
   await page.waitForTimeout(1600);
   await expect(
@@ -191,7 +202,9 @@ test("実MP3の持ち込み・再生・A–B・録音・MP3/ZIP出力・復元",
   expect(+probe.streams[0].duration).toBeGreaterThan(3);
   await page.getByLabel("自分の録音も教材と一緒に保存する").check();
   await page.getByRole("button", { name: "教材を保存", exact: true }).click();
-  await expect(page.getByRole("status")).toContainText("保存しました");
+  await expect(page.locator(".notice[role=status]")).toContainText(
+    "保存しました",
+  );
   await page.reload();
   await page.getByRole("button", { name: /input.mp3 英語/ }).click();
   await expect(page.getByLabel("開始 A（秒）", { exact: true })).toHaveValue(
@@ -438,16 +451,12 @@ test("ゲージのA–Bドラッグ・拡大・0.05刻みの速度と区間の�
   const beforeA = await a.getAttribute("aria-valuenow"),
     beforeB = await b.getAttribute("aria-valuenow");
   const speed = page.getByLabel("再生速度（高さを維持）");
-  await expect(speed.locator("option")).toHaveCount(31);
-  expect(
-    await speed
-      .locator("option")
-      .evaluateAll((options) =>
-        options.map((o) => (o as HTMLOptionElement).value),
-      ),
-  ).toEqual(Array.from({ length: 31 }, (_, i) => String((50 + i * 5) / 100)));
+  await expect(speed).toHaveAttribute("type", "range");
+  await expect(speed).toHaveAttribute("min", "0.5");
+  await expect(speed).toHaveAttribute("max", "2");
+  await expect(speed).toHaveAttribute("step", "0.05");
   for (const rate of [".55", "1.05", "2"]) {
-    await speed.selectOption(String(+rate));
+    await setPlaybackSpeed(page, +rate);
     expect(
       await page
         .locator(".practice audio")
@@ -457,9 +466,9 @@ test("ゲージのA–Bドラッグ・拡大・0.05刻みの速度と区間の�
     expect(await a.getAttribute("aria-valuenow")).toBe(beforeA);
     expect(await b.getAttribute("aria-valuenow")).toBe(beforeB);
   }
-  await speed.selectOption("1.05");
+  await setPlaybackSpeed(page, 1.05);
   await page.getByRole("button", { name: "教材を保存", exact: true }).click();
-  await expect(page.getByRole("status")).toContainText(
+  await expect(page.locator(".notice[role=status]")).toContainText(
     "教材をこのブラウザーに保存しました",
   );
   await page.reload();
@@ -571,10 +580,216 @@ test.describe("タッチ操作のゲージ", () => {
         .getAttribute("aria-valuenow"))!,
     ).toBeCloseTo(7, 1);
     await expect(page.getByLabel("区間リピート")).toBeChecked();
+    const speed = page.getByRole("slider", { name: "再生速度（高さを維持）" });
+    await speed.focus();
+    await speed.press("Home");
+    await speed.scrollIntoViewIfNeeded();
+    const speedBox = await speed.boundingBox();
+    if (!speedBox) throw Error("Speed slider missing");
+    const y = speedBox.y + speedBox.height / 2;
+    await cdp.send("Input.dispatchTouchEvent", {
+      type: "touchStart",
+      touchPoints: [{ x: speedBox.x + 8, y }],
+    });
+    await cdp.send("Input.dispatchTouchEvent", {
+      type: "touchMove",
+      touchPoints: [{ x: speedBox.x + speedBox.width / 2, y }],
+    });
+    await cdp.send("Input.dispatchTouchEvent", {
+      type: "touchEnd",
+      touchPoints: [],
+    });
+    await expect(speed).toHaveValue("1.25");
+    await page
+      .locator(".player")
+      .screenshot({ path: "/tmp/shadowing-speed-slider-mobile.png" });
     await page.screenshot({
       path: "/tmp/shadowing-touch-gauge.png",
       fullPage: true,
     });
     await cdp.detach();
   });
+});
+
+test("複数ページPDFを並行で読み込んでも本文の順序を保ち、次のPDFを読み込める", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const pdf = await PDFDocument.create(),
+    font = await pdf.embedFont(StandardFonts.Helvetica);
+  for (let i = 1; i <= 12; i++)
+    pdf.addPage().drawText(`Ordered page ${i}. Keep this sentence.`, { font });
+  await page.getByLabel("資料ファイル").focus();
+  await page.getByLabel("資料ファイル").setInputFiles({
+    name: "ordered.pdf",
+    mimeType: "application/pdf",
+    buffer: Buffer.from(await pdf.save()),
+  });
+  await expect(page.getByLabel("本文", { exact: true })).toHaveValue(
+    /Ordered page 12/,
+  );
+  const text = await page.getByLabel("本文", { exact: true }).inputValue();
+  let previous = -1;
+  for (let i = 1; i <= 12; i++) {
+    const index = text.indexOf(`Ordered page ${i}.`);
+    expect(index).toBeGreaterThan(previous);
+    previous = index;
+  }
+  const next = await PDFDocument.create();
+  next.addPage().drawText("A second PDF uses the same reader.", {
+    font: await next.embedFont(StandardFonts.Helvetica),
+  });
+  await page.getByLabel("資料ファイル").setInputFiles({
+    name: "second.pdf",
+    mimeType: "application/pdf",
+    buffer: Buffer.from(await next.save()),
+  });
+  await expect(page.getByLabel("本文", { exact: true })).toHaveValue(
+    /A second PDF uses the same reader/,
+  );
+});
+
+test("試聴キャッシュを再読み込み後に利用し、全文生成へ再利用し、教材を残して削除できる", async ({
+  page,
+}) => {
+  await page.goto("/");
+  // Synthetic PCM verifies cache plumbing only; this is not a voice-quality test.
+  await page.evaluate(async () => {
+    const { putSpeechCache } = await import("/src/speech-cache.ts");
+    const { clipKey } = await import("/src/core.ts");
+    const samples = Float32Array.from(
+      { length: 24000 },
+      (_, i) => 0.1 * Math.sin((2 * Math.PI * 440 * i) / 24000),
+    );
+    await putSpeechCache(clipKey("A short preview.", "af_heart", 1), {
+      samples,
+      rate: 24000,
+    });
+  });
+  await page.reload();
+  let modelRequests = 0;
+  await page.route("https://huggingface.co/**", (r) => {
+    modelRequests++;
+    return r.abort("blockedbyclient");
+  });
+  await page.getByLabel("本文", { exact: true }).fill("A short preview.");
+  await page.locator(".voice").first().getByRole("button").click();
+  await expect(page.locator(".progress")).toContainText(
+    "保存済みの音声を再利用しました",
+  );
+  expect(modelRequests).toBe(0);
+  await page
+    .getByRole("button", { name: "この声と設定で確定", exact: true })
+    .click();
+  await page.getByRole("button", { name: "全文生成", exact: true }).click();
+  await expect(page.getByText("1文の音声", { exact: true })).toBeVisible();
+  expect(modelRequests).toBe(0);
+  await page.getByRole("button", { name: "教材を保存", exact: true }).click();
+  await expect(page.locator(".notice[role=status]")).toContainText(
+    "教材をこのブラウザーに保存しました",
+  );
+  await page
+    .getByRole("button", { name: "音声キャッシュを削除", exact: true })
+    .click();
+  const state = await page.evaluate(async () => {
+    const { getSpeechCache } = await import("/src/speech-cache.ts");
+    const { clipKey } = await import("/src/core.ts");
+    const { listLessons } = await import("/src/storage.ts");
+    return {
+      cache: await getSpeechCache(clipKey("A short preview.", "af_heart", 1)),
+      lessonCount: (await listLessons()).length,
+    };
+  });
+  expect(state.cache).toBeNull();
+  expect(state.lessonCount).toBe(1);
+  await page.getByRole("button", { name: "1.0×に戻す", exact: true }).click();
+  await expect(
+    page.getByRole("slider", { name: "再生速度（高さを維持）" }),
+  ).toHaveValue("1");
+  await page.evaluate(async () => {
+    const { putSpeechCache } = await import("/src/speech-cache.ts");
+    await putSpeechCache("deletion-fixture", {
+      samples: new Float32Array([0.1]),
+      rate: 24000,
+    });
+  });
+  page.once("dialog", (dialog) => dialog.accept());
+  await page
+    .getByRole("button", { name: "新しい教材を削除", exact: true })
+    .click();
+  await expect(
+    page.getByText("練習の積み重ねを、ここに。", { exact: true }),
+  ).toBeVisible();
+  await page.reload();
+  expect(
+    await page.evaluate(async () => {
+      const { getSpeechCache } = await import("/src/speech-cache.ts");
+      return getSpeechCache("deletion-fixture");
+    }),
+  ).toBeNull();
+});
+
+test("音声キャッシュは24件の上限と有効期限を守る", async ({ page }) => {
+  await page.goto("/");
+  const result = await page.evaluate(async () => {
+    const {
+      putSpeechCache,
+      clearSpeechCache,
+      cleanExpiredSpeechCache,
+      getSpeechCache,
+    } = await import("/src/speech-cache.ts");
+    const request = <T>(r: IDBRequest<T>) =>
+      new Promise<T>((resolve, reject) => {
+        r.onsuccess = () => resolve(r.result);
+        r.onerror = () => reject(r.error);
+      });
+    const store = await request(indexedDB.open("coaching-l-speech-cache", 1));
+    await clearSpeechCache();
+    const audio = { samples: new Float32Array([0.1, 0.2]), rate: 24000 };
+    for (let i = 0; i < 26; i++) await putSpeechCache("fixture-" + i, audio);
+    const before = await request(
+      store.transaction("meta").objectStore("meta").count(),
+    );
+    const rows = await request(
+      store.transaction("meta").objectStore("meta").getAll(),
+    );
+    await request(
+      store
+        .transaction("meta", "readwrite")
+        .objectStore("meta")
+        .put({ ...rows[0], used: Date.now() - 8 * 86400000 }),
+    );
+    await cleanExpiredSpeechCache();
+    const after = await request(
+      store.transaction("meta").objectStore("meta").count(),
+    );
+    const record = (
+      await request(store.transaction("audio").objectStore("audio").getAll())
+    )[0];
+    await clearSpeechCache();
+    const large = { samples: new Float32Array(1024 * 1024), rate: 24000 };
+    for (let i = 0; i < 9; i++)
+      await putSpeechCache("large-fixture-" + i, large);
+    const bytes = (
+      await request(store.transaction("meta").objectStore("meta").getAll())
+    ).reduce((sum, row) => sum + row.bytes, 0);
+    const pending = putSpeechCache("cleared-during-write", audio);
+    await clearSpeechCache();
+    await pending;
+    const cleared = await getSpeechCache("cleared-during-write");
+    return {
+      before,
+      after,
+      keys: Object.keys(record),
+      digest: record.key,
+      bytes,
+      cleared,
+    };
+  });
+  expect(result.before).toBe(24);
+  expect(result.after).toBe(23);
+  expect(result.keys.sort()).toEqual(["key", "rate", "samples"]);
+  expect(result.digest).toMatch(/^[a-f0-9]{64}$/);
+  expect(result.bytes).toBeLessThanOrEqual(32 * 1024 * 1024);
+  expect(result.cleared).toBeNull();
 });

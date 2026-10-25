@@ -13,7 +13,13 @@ import {
 } from "lucide-react";
 import { clipKey, NO_GAP, splitSentences, wavBlob } from "./core";
 import type { Clip, Lang } from "./core";
-import { extractDocument } from "./documents";
+import { extractDocument, primeDocumentReaders } from "./documents";
+import {
+  getSpeechCache,
+  putSpeechCache,
+  clearSpeechCache,
+  cleanExpiredSpeechCache,
+} from "./speech-cache";
 import { BrowserEngine, VOICES, ZH_VOICES } from "./engine";
 import { saveLesson, listLessons, deleteLesson } from "./storage";
 import type { Lesson, Recording } from "./storage";
@@ -51,12 +57,12 @@ export default function App() {
     [recording, setRecording] = useState<Recording | undefined>(),
     [persistRecording, setPersistRecording] = useState(false),
     [importing, setImporting] = useState(false),
+    [importProgress, setImportProgress] = useState(""),
     [saving, setSaving] = useState(false);
   const rawInput = useRef<HTMLTextAreaElement>(null),
     engine = useRef(new BrowserEngine()),
     preview = useRef<HTMLAudioElement>(null),
     previewUrl = useRef(""),
-    previewCache = useRef(new Map<string, Clip>()),
     cancelled = useRef(false);
   const update = (patch: Partial<Lesson>) => {
     setNotice("");
@@ -95,6 +101,7 @@ export default function App() {
     return () => document.removeEventListener("play", exclusive, true);
   }, []);
   useEffect(() => {
+    void cleanExpiredSpeechCache();
     void listLessons()
       .then(setLibrary)
       .catch((e) => report("教材一覧を読み込めません。 " + String(e)));
@@ -123,10 +130,11 @@ export default function App() {
     setNotice("");
   }
   async function loadFile(file: File) {
+    setImportProgress("ファイルを読み込んでいます…");
     setImporting(true);
     setError("");
     try {
-      const text = await extractDocument(file);
+      const text = await extractDocument(file, setImportProgress);
       update({ text, sentences: [], title: file.name.replace(/\.[^.]+$/, "") });
       setConfirmed("");
       setNotice(
@@ -173,14 +181,18 @@ export default function App() {
       const sentences = lesson.sentences.length
         ? lesson.sentences
         : splitSentences(lesson.text.trim(), lesson.lang);
-      const text = previewText.trim() || sentences.slice(0, 2).join(" ");
+      const text = previewText.trim() || sentences[0] || "";
       if (!text) throw Error("本文または試聴原稿を入力してください。");
       if (text.length > 400)
         throw Error(
           "試聴原稿は400文字までです。自然な文の区切りで短くしてください。",
         );
       const key = clipKey(text, voice, lesson.speed);
-      let clip = previewCache.current.get(key);
+      const cached =
+        lesson.clips.find((clip) => clip.key === key) ??
+        (await getSpeechCache(key));
+      let clip = cached;
+      if (cancelled.current) return;
       if (!clip) {
         const result = await engine.current.generate(
           text,
@@ -188,8 +200,8 @@ export default function App() {
           lesson.speed,
           setProgress,
         );
-        clip = { ...result, key, text };
-        previewCache.current.set(key, clip);
+        clip = result;
+        void putSpeechCache(key, result);
       }
       if (cancelled.current) return;
       URL.revokeObjectURL(previewUrl.current);
@@ -199,7 +211,11 @@ export default function App() {
       preview.current!.src = previewUrl.current;
       setPreviewVoice(voice);
       await preview.current!.play();
-      setProgress("試聴音声を生成しました。");
+      setProgress(
+        cached
+          ? "保存済みの音声を再利用しました。"
+          : "試聴音声を生成しました。",
+      );
     } catch (e) {
       report(String(e));
     } finally {
@@ -239,15 +255,19 @@ export default function App() {
         setProgress(`${i + 1} / ${snapshot.sentences.length} 文を生成中`);
         if (cache.has(key)) continue;
         try {
-          const result = await engine.current.generate(
-            text,
-            snapshot.voice,
-            snapshot.speed,
-            (msg) =>
-              setProgress(
-                `${i + 1} / ${snapshot.sentences.length} 文 · ${msg}`,
-              ),
-          );
+          const cached = await getSpeechCache(key);
+          if (cancelled.current) break;
+          const result =
+            cached ??
+            (await engine.current.generate(
+              text,
+              snapshot.voice,
+              snapshot.speed,
+              (msg) =>
+                setProgress(
+                  `${i + 1} / ${snapshot.sentences.length} 文 · ${msg}`,
+                ),
+            ));
           if (cancelled.current) break;
           if (
             [
@@ -261,6 +281,7 @@ export default function App() {
             1200
           )
             throw Error("音声が20分を超えます。教材を分けてください。");
+          if (!cached) void putSpeechCache(key, result);
           cache.set(key, { ...result, text, key });
           setLesson((l) => ({ ...l, clips: [...cache.values()] }));
         } catch (e) {
@@ -467,11 +488,21 @@ export default function App() {
                     onClick={() => {
                       if (
                         confirm(
-                          `「${item.title}」をこのブラウザーから削除しますか？`,
+                          `「${item.title}」を削除しますか？ 音声の一時キャッシュもまとめて削除します。`,
                         )
                       )
                         void deleteLesson(item.id)
-                          .then(() => listLessons())
+                          .then(async () => {
+                            try {
+                              await clearSpeechCache();
+                            } catch (e) {
+                              report(
+                                "教材は削除しました。一時音声キャッシュの削除に失敗しました: " +
+                                  String(e),
+                              );
+                            }
+                            return listLessons();
+                          })
                           .then(setLibrary)
                           .catch((e) => report(String(e)));
                     }}
@@ -550,10 +581,14 @@ export default function App() {
               >
                 <Upload size={25} />
                 <strong>
-                  {importing ? "読み込み中…" : "資料を選んで取り込む"}
+                  {importing
+                    ? importProgress || "読み込み中…"
+                    : "資料を選んで取り込む"}
                 </strong>
                 <span>Word（.docx）・PDF・テキスト（.txt）／最大20 MB</span>
                 <input
+                  onPointerDown={primeDocumentReaders}
+                  onFocus={primeDocumentReaders}
                   aria-label="資料ファイル"
                   type="file"
                   accept=".docx,.pdf,.txt"
@@ -740,14 +775,14 @@ export default function App() {
                   同じ原稿で、英語は5声、中国語は3声を聴き比べられます。試聴して、発音や区切り、好みに合う声か確認してください。
                 </p>
                 <label>
-                  試聴原稿（400文字以内・空欄なら先頭2文）
+                  試聴原稿（400文字以内・空欄なら先頭1文）
                   <textarea
                     rows={3}
                     value={previewText}
                     disabled={busy}
                     onChange={(e) => setPreviewText(e.target.value)}
                     placeholder={
-                      lesson.sentences.slice(0, 2).join(" ") ||
+                      lesson.sentences[0] ||
                       "本文を入力すると先頭の文で試聴できます。短い試聴原稿を直接入力することもできます。"
                     }
                   />
@@ -814,6 +849,25 @@ export default function App() {
                   初回はHugging
                   Faceからモデル、jsDelivrから実行ファイルを取得します。本文は外部送信せず、端末内のWebAssemblyで生成します。音声広告やサービス名を挿入する処理はありません。初回取得には時間がかかります。
                 </p>
+                <p className="small">
+                  待ち時間を短くするため、空欄なら先頭の1文だけで試聴します。試聴・生成音声の一部をこの端末に最大32
+                  MB・24件キャッシュし、7日を過ぎた音声は次回利用時に削除します。
+                </p>
+                <button
+                  className="text-button"
+                  disabled={busy}
+                  onClick={() => {
+                    void clearSpeechCache()
+                      .then(() =>
+                        setNotice(
+                          "音声の一時キャッシュを削除しました。保存した教材は引き続き使えます。",
+                        ),
+                      )
+                      .catch((e) => report(String(e)));
+                  }}
+                >
+                  音声キャッシュを削除
+                </button>
                 <button
                   disabled={
                     busy ||
