@@ -141,6 +141,8 @@ define-properties@1.2.1 — MIT
 detect-libc@2.1.2 — Apache-2.0
 detect-node@2.1.0 — MIT
 dictionary-en@4.0.0 — (MIT AND BSD)
+dictionary-en-gb@3.0.0 — (MIT AND BSD)
+diff@8.0.2 — BSD-3-Clause
 dingbat-to-unicode@1.0.2 — BSD-2-Clause
 duck@0.1.12 — BSD
 es-define-property@1.0.1 — MIT
