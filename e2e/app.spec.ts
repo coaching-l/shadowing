@@ -1098,11 +1098,11 @@ test("端末内タイポ候補は選択範囲だけに確認後反映し、大�
     "修正候補を作れませんでした",
   );
   await expect(editor).toHaveValue("What matters today?");
-  await editor.fill("a".repeat(301));
+  await editor.fill("a".repeat(5001));
   await page
     .getByRole("button", { name: "タイポの修正候補を作る", exact: true })
     .click();
-  await expect(page.getByRole("alert")).toContainText("300文字以内");
+  await expect(page.getByRole("alert")).toContainText("5,000文字以内");
   expect(await page.evaluate(() => (window as any).localCalls.length)).toBe(2);
 });
 
@@ -1320,4 +1320,132 @@ test("端末内AIの中止とモデルエラー後も本文を残し操作を再
   await expect(page.getByLabel("本文", { exact: true })).toHaveValue(
     "A sentnce.",
   );
+});
+
+test("英語5,000文字をまとめて確認し、末尾まで候補を保持して反映できる", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const unit = "This sentnce has a speling eror.\n";
+  const full = unit.repeat(Math.floor(4970 / unit.length));
+  const original =
+    full + " ".repeat(4980 - full.length) + "Keep this last line.";
+  expect(original.length).toBe(5000);
+  const editor = page.getByLabel("本文", { exact: true });
+  await editor.fill(original);
+  await page
+    .getByText("端末内でタイポを確認（試験機能）", { exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: "タイポの修正候補を作る", exact: true })
+    .click();
+  const candidate = page.getByLabel("修正候補（編集できます）");
+  const expected = original
+    .replaceAll("sentnce", "sentence")
+    .replaceAll("speling", "spelling")
+    .replaceAll("eror", "error");
+  await expect(candidate).toHaveValue(expected, { timeout: 30000 });
+  await expect(editor).toHaveValue(original);
+  await expect(candidate).toHaveAttribute("maxlength", "10000");
+  // The review remains editable even when the proposed text exceeds 5,000 characters.
+  await candidate.press("End");
+  await candidate.press("ArrowRight");
+  await candidate.evaluate((el: HTMLTextAreaElement) =>
+    el.setSelectionRange(el.value.length, el.value.length),
+  );
+  await candidate.press("!");
+  await expect(candidate).toHaveValue(expected + "!");
+  await page
+    .getByRole("button", { name: "この候補を本文に反映", exact: true })
+    .click();
+  await expect(editor).toHaveValue(expected + "!");
+});
+
+test("タイポ確認の途中中止・途中失敗では部分候補を反映しない", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    const native = window.Worker;
+    (window as any).chunkCalls = [];
+    (window as any).chunkMode = "manual";
+    window.Worker = new Proxy(native, {
+      construct(target, args) {
+        if (!String(args[0]).includes("local-ai.worker"))
+          return Reflect.construct(target, args);
+        const worker = {
+          onmessage: null as any,
+          onerror: null,
+          terminate() {
+            (window as any).respondChunk = undefined;
+          },
+          postMessage(data: any) {
+            (window as any).chunkCalls.push(data.text);
+            const reply = () =>
+              worker.onmessage?.({
+                data: {
+                  type: "result",
+                  text: data.text.replaceAll("sentnce", "sentence"),
+                },
+              });
+            (window as any).respondChunk = reply;
+            if ((window as any).chunkMode === "fail")
+              setTimeout(() => {
+                if ((window as any).chunkCalls.length === 2)
+                  worker.onmessage?.({
+                    data: { type: "error", message: "Second chunk failed" },
+                  });
+                else reply();
+              }, 30);
+          },
+        };
+        return worker;
+      },
+    });
+  });
+  await page.goto("/");
+  const original = "A short sentnce.\n".repeat(60);
+  const editor = page.getByLabel("本文", { exact: true });
+  await editor.fill(original);
+  await page
+    .getByText("端末内でタイポを確認（試験機能）", { exact: true })
+    .click();
+  const start = page.getByRole("button", {
+    name: "タイポの修正候補を作る",
+    exact: true,
+  });
+  await start.click();
+  await expect
+    .poll(() => page.evaluate(() => (window as any).chunkCalls.length))
+    .toBe(1);
+  await page.evaluate(() => (window as any).respondChunk());
+  await expect
+    .poll(() => page.evaluate(() => (window as any).chunkCalls.length))
+    .toBe(2);
+  await expect(
+    page.getByRole("status", { name: "タイポ確認の状況", exact: true }),
+  ).toContainText("2 /");
+  await page
+    .getByRole("button", { name: "タイポ確認を中止", exact: true })
+    .click();
+  await expect(start).toBeEnabled();
+  await expect(editor).toHaveValue(original);
+  await expect(page.getByLabel("修正候補（編集できます）")).toHaveCount(0);
+  await expect(
+    page.getByRole("status", { name: "タイポ確認の状況", exact: true }),
+  ).toContainText("中止しました");
+  await page.evaluate(() => {
+    (window as any).chunkMode = "fail";
+    (window as any).chunkCalls = [];
+  });
+  await start.click();
+  await expect(page.getByRole("alert")).toContainText("2 /");
+  await expect(page.getByRole("alert")).toContainText("Second chunk failed");
+  await expect(editor).toHaveValue(original);
+  await expect(start).toBeEnabled();
+  await expect(page.getByLabel("修正候補（編集できます）")).toHaveCount(0);
+  expect(
+    await page.evaluate(() =>
+      (window as any).chunkCalls.every((text: string) => text.length <= 300),
+    ),
+  ).toBe(true);
 });

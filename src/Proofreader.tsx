@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { Lang } from "./core";
 import { localAI } from "./local-ai";
 import { validateCorrection } from "./feedback";
+import { MAX_PROOFREADING_CHARS, proofreadingChunks } from "./proofreading";
 type Selection = { start: number; end: number };
 type Props = {
   text: string;
@@ -34,12 +35,14 @@ export default function Proofreader({
     text: string;
   } | null>(null);
   const alive = useRef(true),
-    active = useRef(false);
+    active = useRef(false),
+    cancelled = useRef(false);
   useEffect(() => {
     alive.current = true;
     return () => {
       alive.current = false;
       if (active.current) {
+        cancelled.current = true;
         localAI.release();
         onBusyChange(false);
       }
@@ -58,23 +61,49 @@ export default function Proofreader({
     const original = text.slice(chosen.start, chosen.end);
     setCandidate(null);
     setError("");
-    if (!original.trim() || original.length > 300) {
+    if (!original.trim() || original.length > MAX_PROOFREADING_CHARS) {
       setError(
-        "本文で300文字以内の範囲を選択してください。短い本文は全体を確認できます。",
+        "本文を入力するか、5,000文字以内の範囲を選択してください。5,000文字以内の本文は全体を確認できます。",
       );
       return;
     }
     onPrepare();
     active.current = true;
+    cancelled.current = false;
     setRunning(true);
     onBusyChange(true);
     setStatus("タイポ確認を準備しています…");
     try {
-      const result = validateCorrection(
-        original,
-        await localAI.run("correct", { lang, text: original }, setStatus),
-      );
-      if (alive.current) {
+      const chunks = proofreadingChunks(original, lang);
+      const total = chunks.filter((chunk) => chunk.trim()).length;
+      const corrected: string[] = [];
+      let completed = 0;
+      for (const chunk of chunks) {
+        if (cancelled.current || !alive.current) return;
+        if (!chunk.trim()) {
+          corrected.push(chunk);
+          continue;
+        }
+        const prefix = `タイポを確認中… ${completed + 1} / ${total}区間`;
+        setStatus(prefix);
+        try {
+          const result = await localAI.run(
+            "correct",
+            { lang, text: chunk },
+            (message) => setStatus(`${prefix} · ${message}`),
+          );
+          if (cancelled.current || !alive.current) return;
+          corrected.push(validateCorrection(chunk, result));
+          completed++;
+        } catch (e) {
+          if (cancelled.current) throw e;
+          throw Error(
+            `${completed + 1} / ${total}区間で停止しました。本文は変更していません。 ${String(e)}`,
+          );
+        }
+      }
+      const result = corrected.join("");
+      if (alive.current && !cancelled.current) {
         setCandidate({ selection: chosen, original, text: result });
         setStatus(
           result === original
@@ -84,8 +113,12 @@ export default function Proofreader({
       }
     } catch (e) {
       if (alive.current) {
-        setStatus("");
-        setError(String(e));
+        setStatus(
+          cancelled.current
+            ? "タイポ確認を中止しました。本文は変更していません。"
+            : "",
+        );
+        if (!cancelled.current) setError(String(e));
       }
     } finally {
       active.current = false;
@@ -99,14 +132,22 @@ export default function Proofreader({
     <details className="local-ai-panel">
       <summary>端末内でタイポを確認（試験機能）</summary>
       <p className="small">
-        英語・中国語の選択範囲を最大300文字まで確認します。原文は自動で書き換えません。英語は米国英語の辞書でスペルを確認し、中国語は簡体字向けのAIモデル（初回約104
+        英語・中国語の本文全体または選択範囲を最大5,000文字まで確認します。短い範囲に分けて順番に処理し、最後に候補をまとめて表示します。原文は自動で書き換えません。英語は米国英語の辞書でスペルを確認し、中国語は簡体字向けのAIモデル（初回約104
         MB）を使います。無料・ログイン不要で、本文を外部AIへ送りません。人名・専門用語や文意が変わっていないか確認してください。
       </p>
       <button disabled={blocked || !text.trim()} onClick={() => void check()}>
         タイポの修正候補を作る
       </button>
       {running && (
-        <button onClick={() => localAI.release()}>タイポ確認を中止</button>
+        <button
+          onClick={() => {
+            cancelled.current = true;
+            setStatus("タイポ確認を中止しました。本文は変更していません。");
+            localAI.release();
+          }}
+        >
+          タイポ確認を中止
+        </button>
       )}
       {status && (
         <p role="status" aria-label="タイポ確認の状況" className="small">
@@ -124,7 +165,7 @@ export default function Proofreader({
             修正候補（編集できます）
             <textarea
               value={candidate.text}
-              maxLength={600}
+              maxLength={MAX_PROOFREADING_CHARS * 2}
               disabled={blocked}
               rows={3}
               onChange={(e) =>
