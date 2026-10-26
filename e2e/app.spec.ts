@@ -930,13 +930,11 @@ test("5秒送り戻しは停止状態を保ち、再生中・区間リピート�
       44 + 2 * i,
     );
   await page.getByText("手元の音声で練習する", { exact: true }).click();
-  await page
-    .getByLabel("練習用音声")
-    .setInputFiles({
-      name: "skip-test.wav",
-      mimeType: "audio/wav",
-      buffer: wav,
-    });
+  await page.getByLabel("練習用音声").setInputFiles({
+    name: "skip-test.wav",
+    mimeType: "audio/wav",
+    buffer: wav,
+  });
   const audio = page
     .locator(".player")
     .locator("xpath=preceding-sibling::audio[1]");
@@ -1001,6 +999,13 @@ test("5秒送り戻しは停止状態を保ち、再生中・区間リピート�
   ).toBeVisible();
   await expect(back).toBeDisabled();
   await expect(forward).toBeDisabled();
+  await expect(page.getByLabel("本文", { exact: true })).toBeDisabled();
+  await page
+    .getByText("端末内でタイポを確認（試験機能）", { exact: true })
+    .click();
+  await expect(
+    page.getByRole("button", { name: "タイポの修正候補を作る", exact: true }),
+  ).toBeDisabled();
   await page.getByRole("button", { name: "録音を停止", exact: true }).click();
   await page.setViewportSize({ width: 320, height: 800 });
   await forward.scrollIntoViewIfNeeded();
@@ -1016,4 +1021,303 @@ test("5秒送り戻しは停止状態を保ち、再生中・区間リピート�
   await page
     .locator(".player")
     .screenshot({ path: "/tmp/shadowing-skip-mobile.png" });
+});
+
+test("端末内タイポ候補は選択範囲だけに確認後反映し、大幅な書き換えを拒否する", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    const native = window.Worker;
+    (window as any).localCalls = [];
+    (window as any).localResult = "This sentence has a spelling error.";
+    window.Worker = new Proxy(native, {
+      construct(target, args) {
+        if (!String(args[0]).includes("local-ai.worker"))
+          return Reflect.construct(target, args);
+        const worker = {
+          onmessage: null as any,
+          onerror: null,
+          terminate() {},
+          postMessage(data: any) {
+            (window as any).localCalls.push(data);
+            setTimeout(
+              () =>
+                worker.onmessage?.({
+                  data: { type: "result", text: (window as any).localResult },
+                }),
+              80,
+            );
+          },
+        };
+        return worker;
+      },
+    });
+  });
+  await page.goto("/");
+  const editor = page.getByLabel("本文", { exact: true });
+  const original =
+    "Keep this heading.\nThis sentnce has a speling eror.\nKeep this ending.";
+  await editor.fill(original);
+  await page
+    .getByText("端末内でタイポを確認（試験機能）", { exact: true })
+    .click();
+  await editor.evaluate((el: HTMLTextAreaElement) => {
+    const start = el.value.indexOf("This sentnce");
+    el.setSelectionRange(start, el.value.indexOf("\nKeep this ending"));
+  });
+  await page
+    .getByRole("button", { name: "タイポの修正候補を作る", exact: true })
+    .click();
+  await expect(page.getByLabel("修正候補（編集できます）")).toHaveValue(
+    "This sentence has a spelling error.",
+  );
+  await expect(editor).toHaveValue(original);
+  expect(
+    await page.evaluate(() => (window as any).localCalls[0]),
+  ).toMatchObject({
+    kind: "correct",
+    lang: "en",
+    text: "This sentnce has a speling eror.",
+  });
+  await page
+    .getByRole("button", { name: "この候補を本文に反映", exact: true })
+    .click();
+  await expect(editor).toHaveValue(
+    "Keep this heading.\nThis sentence has a spelling error.\nKeep this ending.",
+  );
+  await expect(page.getByLabel("修正候補（編集できます）")).toHaveCount(0);
+  await page.evaluate(() => {
+    (window as any).localResult =
+      "I would like to answer your question with a long explanation.";
+  });
+  await editor.fill("What matters today?");
+  await page
+    .getByRole("button", { name: "タイポの修正候補を作る", exact: true })
+    .click();
+  await expect(page.getByRole("alert")).toContainText(
+    "修正候補を作れませんでした",
+  );
+  await expect(editor).toHaveValue("What matters today?");
+  await editor.fill("a".repeat(301));
+  await page
+    .getByRole("button", { name: "タイポの修正候補を作る", exact: true })
+    .click();
+  await expect(page.getByRole("alert")).toContainText("300文字以内");
+  expect(await page.evaluate(() => (window as any).localCalls.length)).toBe(2);
+});
+
+test("録音を端末内で文字起こしし、編集可能な認識結果と原稿を照合する", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    const native = window.Worker;
+    (window as any).localCalls = [];
+    window.Worker = new Proxy(native, {
+      construct(target, args) {
+        if (!String(args[0]).includes("local-ai.worker"))
+          return Reflect.construct(target, args);
+        const worker = {
+          onmessage: null as any,
+          onerror: null,
+          terminate() {},
+          postMessage(data: any) {
+            (window as any).localCalls.push({
+              kind: data.kind,
+              lang: data.lang,
+              length: data.samples.length,
+            });
+            setTimeout(
+              () =>
+                worker.onmessage?.({
+                  data: { type: "result", text: "Take a slow breath." },
+                }),
+              80,
+            );
+          },
+        };
+        return worker;
+      },
+    });
+  });
+  await page.goto("/");
+  await page.evaluate(async () => {
+    const { saveLesson } = await import("/src/storage.ts");
+    const { clipKey, wavBlob } = await import("/src/core.ts");
+    const samples = Float32Array.from(
+      { length: 48000 },
+      (_, i) => 0.1 * Math.sin((2 * Math.PI * 440 * i) / 24000),
+    );
+    await saveLesson({
+      id: "feedback-fixture",
+      title: "Feedback fixture",
+      lang: "en",
+      text: "Take a deep breath.",
+      sentences: ["Take a deep breath."],
+      voice: "af_heart",
+      speed: 1,
+      clips: [
+        {
+          text: "Take a deep breath.",
+          key: clipKey("Take a deep breath.", "af_heart", 1),
+          samples,
+          rate: 24000,
+        },
+      ],
+      gap: { mode: "none", seconds: 2, min: 1, max: 8 },
+      mode: "shadow",
+      a: 0,
+      b: 2,
+      repeat: 3,
+      repeatGap: 1,
+      rate: 1,
+      loop: false,
+      updated: Date.now(),
+      recording: {
+        blob: wavBlob(samples, 24000),
+        a: 0,
+        b: 2,
+        label: "00:00–00:02",
+      },
+    });
+  });
+  await page.reload();
+  await page.getByRole("button", { name: /Feedback fixture 英語/ }).click();
+  await page.getByText("自分の声を録音して比較", { exact: true }).click();
+  await expect(page.getByLabel("比較する原稿（録音した範囲）")).toHaveValue(
+    "Take a deep breath.",
+  );
+  await page
+    .getByRole("button", { name: "録音を端末内AIで文字起こし", exact: true })
+    .click();
+  const transcript = page.getByLabel(
+    "AIの文字起こし（聴き直して修正できます）",
+  );
+  await expect(transcript).toHaveValue("Take a slow breath.");
+  expect(
+    await page.evaluate(() => (window as any).localCalls[0]),
+  ).toMatchObject({ kind: "transcribe", lang: "en", length: 32000 });
+  await page
+    .getByRole("button", { name: "この文字起こしで原稿と照合", exact: true })
+    .click();
+  await expect(
+    page.getByRole("cell", { name: "deep", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("cell", { name: "slow", exact: true }),
+  ).toBeVisible();
+  await transcript.fill("Take a deep breath.");
+  await expect(page.getByText(/原稿と認識結果が異なる箇所/)).toHaveCount(0);
+  await page
+    .getByRole("button", { name: "この文字起こしで原稿と照合", exact: true })
+    .click();
+  await expect(
+    page.getByText("文字起こし上は原稿と一致しました。", { exact: true }),
+  ).toBeVisible();
+});
+
+test("実際の英語スペル辞書は外部AIへ接続せず動く", async ({ page }) => {
+  let modelRequests = 0;
+  await page.route("https://huggingface.co/**", (route) => {
+    modelRequests++;
+    return route.abort();
+  });
+  await page.goto("/");
+  const editor = page.getByLabel("本文", { exact: true });
+  await editor.fill("This sentnce has a speling eror.");
+  await page
+    .getByText("端末内でタイポを確認（試験機能）", { exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: "タイポの修正候補を作る", exact: true })
+    .click();
+  await expect(page.getByLabel("修正候補（編集できます）")).toHaveValue(
+    "This sentence has a spelling error.",
+  );
+  await expect(editor).toHaveValue("This sentnce has a speling eror.");
+  expect(modelRequests).toBe(0);
+  const errors = await page.evaluate(async () => {
+    const { decodeRecording } = await import("/src/feedback.ts");
+    const { wavBlob } = await import("/src/core.ts");
+    const results = [];
+    for (const seconds of [2, 31]) {
+      try {
+        await decodeRecording(
+          wavBlob(new Float32Array(24000 * seconds), 24000),
+        );
+        results.push("unexpected success");
+      } catch (e) {
+        results.push(String(e));
+      }
+    }
+    return results;
+  });
+  expect(errors[0]).toContain("無音");
+  expect(errors[1]).toContain("0.4〜30秒");
+});
+
+test("端末内AIの中止とモデルエラー後も本文を残し操作を再開できる", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    const native = window.Worker;
+    (window as any).testAIMode = "hang";
+    (window as any).terminatedAI = 0;
+    window.Worker = new Proxy(native, {
+      construct(target, args) {
+        if (!String(args[0]).includes("local-ai.worker"))
+          return Reflect.construct(target, args);
+        const worker = {
+          onmessage: null as any,
+          onerror: null,
+          terminate() {
+            (window as any).terminatedAI++;
+          },
+          postMessage() {
+            if ((window as any).testAIMode === "error")
+              setTimeout(
+                () =>
+                  worker.onmessage?.({
+                    data: { type: "error", message: "Test model failure" },
+                  }),
+                30,
+              );
+          },
+        };
+        return worker;
+      },
+    });
+  });
+  await page.goto("/");
+  await page.getByLabel("本文", { exact: true }).fill("A sentnce.");
+  await page
+    .getByText("端末内でタイポを確認（試験機能）", { exact: true })
+    .click();
+  const start = page.getByRole("button", {
+    name: "タイポの修正候補を作る",
+    exact: true,
+  });
+  await start.click();
+  await expect(page.getByLabel("本文", { exact: true })).toBeDisabled();
+  await page
+    .getByRole("button", { name: "タイポ確認を中止", exact: true })
+    .click();
+  await expect(start).toBeEnabled();
+  await expect(page.getByLabel("本文", { exact: true })).toHaveValue(
+    "A sentnce.",
+  );
+  expect(
+    await page.evaluate(() => (window as any).terminatedAI),
+  ).toBeGreaterThan(0);
+  await page.evaluate(() => {
+    (window as any).testAIMode = "error";
+  });
+  await start.click();
+  await expect(page.getByRole("alert")).toContainText("Test model failure");
+  await expect(start).toBeEnabled();
+  await expect(
+    page.getByRole("button", { name: "教材を保存", exact: true }),
+  ).toBeEnabled();
+  await expect(page.getByLabel("本文", { exact: true })).toHaveValue(
+    "A sentnce.",
+  );
 });

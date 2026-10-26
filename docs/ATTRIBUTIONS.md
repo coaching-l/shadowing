@@ -22,3 +22,12 @@
 ## 中国語実装の追加依存
 
 pinyin-pro 3.29.5はMITライセンス（https://github.com/zh-lx/pinyin-pro）。音素の対応表はMisakiのZHFrontendから適応し、元のApache-2.0通知とPaddlePaddleの著作権表示をソースに保持しています。対応ライセンス本文をpublic/licensesに同梱しています。Pythonサーバーをアプリの必須構成にはしていません。
+
+## タイポ確認・録音フィードバック
+
+- nspell 2.1.5はMIT、dictionary-en 4.0.0はMIT/BSD表記。SCOWL・WordNet等を含む辞書配布物の通知を、生成される`licenses/dependencies/dictionary-en/license`に保持します。辞書データは変更していません。
+- MacBERT: https://huggingface.co/Xenova/macbert4csc-base-chinese 、上流 https://huggingface.co/shibing624/macbert4csc-base-chinese （Apache-2.0）。
+- Whisper tiny: https://huggingface.co/Xenova/whisper-tiny （Apache-2.0表記）、上流 https://github.com/openai/whisper （MIT、Copyright (c) 2022 OpenAI）。MIT本文を同梱。
+- OpenCC.js 1.4.2はMIT、組込み辞書データはApache-2.0。root LICENSEに加え、同梱THIRD_PARTY_LICENSES.mdとLICENSESディレクトリも配信物へ複製します。
+
+モデルの固定revision・容量・実行方式と制約はLOCAL-AI.mdに記載しています。この追加により既存のGPL/LGPL部品を含むアプリ全体の配布適合性まで確認済みとなるものではありません。

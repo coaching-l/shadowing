@@ -24,6 +24,8 @@ import { BrowserEngine, VOICES, ZH_VOICES } from "./engine";
 import { saveLesson, listLessons, deleteLesson } from "./storage";
 import type { Lesson, Recording } from "./storage";
 import Practice from "./Practice";
+import Proofreader from "./Proofreader";
+import { localAI } from "./local-ai";
 type SpeechTask = { kind: "preview"; voice: string } | { kind: "full" };
 const fresh = (): Lesson => ({
   id: crypto.randomUUID(),
@@ -50,6 +52,8 @@ export default function App() {
     [notice, setNotice] = useState(""),
     [error, setError] = useState(""),
     [task, setTask] = useState<SpeechTask | null>(null),
+    [localBusy, setLocalBusy] = useState(false),
+    [recordingBusy, setRecordingBusy] = useState(false),
     [progress, setProgress] = useState(""),
     [progressKind, setProgressKind] = useState<SpeechTask["kind"]>("preview"),
     [failed, setFailed] = useState<number | null>(null),
@@ -61,7 +65,7 @@ export default function App() {
     [importing, setImporting] = useState(false),
     [importProgress, setImportProgress] = useState(""),
     [saving, setSaving] = useState(false);
-  const busy = task !== null;
+  const busy = task !== null || localBusy || recordingBusy;
   const rawInput = useRef<HTMLTextAreaElement>(null),
     engine = useRef(new BrowserEngine()),
     preview = useRef<HTMLAudioElement>(null),
@@ -110,6 +114,7 @@ export default function App() {
       .catch((e) => report("教材一覧を読み込めません。 " + String(e)));
     return () => {
       engine.current.cancel();
+      localAI.release();
       preview.current?.pause();
       if (previewUrl.current) URL.revokeObjectURL(previewUrl.current);
     };
@@ -180,6 +185,7 @@ export default function App() {
   }
   async function listen(voice: string) {
     if (busy) return;
+    localAI.release();
     stopPreview();
     setTask({ kind: "preview", voice });
     setProgressKind("preview");
@@ -234,6 +240,7 @@ export default function App() {
   }
   async function generate() {
     if (busy) return;
+    localAI.release();
     if (confirmed !== config) {
       report("声と発話速度を確定してください。");
       return;
@@ -392,7 +399,7 @@ export default function App() {
     }
   }
   function speechProgress(kind: SpeechTask["kind"]) {
-    if (progressKind !== kind || (!busy && !progress)) return null;
+    if (progressKind !== kind || (!task && !progress)) return null;
     return (
       <div
         className="progress"
@@ -698,6 +705,36 @@ export default function App() {
                   選択範囲だけ残す
                 </button>
               </div>
+              <Proofreader
+                text={lesson.text}
+                lang={lesson.lang}
+                blocked={busy || importing}
+                selection={() => ({
+                  start: rawInput.current?.selectionStart ?? 0,
+                  end: rawInput.current?.selectionEnd ?? 0,
+                })}
+                onBusyChange={setLocalBusy}
+                onPrepare={() => {
+                  stopPreview();
+                  engine.current.cancel();
+                }}
+                onApply={(range, original, replacement) => {
+                  if (lesson.text.slice(range.start, range.end) !== original) {
+                    report(
+                      "本文が変わりました。タイポ確認をやり直してください。",
+                    );
+                    return;
+                  }
+                  replaceText(
+                    lesson.text.slice(0, range.start) +
+                      replacement +
+                      lesson.text.slice(range.end),
+                  );
+                  setNotice(
+                    "確認した修正候補を本文に反映しました。声の設定を再度確定してください。",
+                  );
+                }}
+              />
               {lesson.sentences.length > 0 && (
                 <details open>
                   <summary>
@@ -1002,6 +1039,13 @@ export default function App() {
               error={report}
               recording={recording}
               setRecording={setRecording}
+              aiBlocked={task !== null || localBusy || importing}
+              onCaptureChange={setRecordingBusy}
+              onAIBusyChange={setLocalBusy}
+              onPrepareAI={() => {
+                stopPreview();
+                engine.current.cancel();
+              }}
             />
             <section className="card save-card">
               <div>

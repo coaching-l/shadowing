@@ -653,6 +653,33 @@ details[open] > summary {
   gap: 16px;
   margin: -8px 0 20px;
 }
+.local-ai-panel {
+  border-top: 1px solid var(--line);
+  margin-top: 18px;
+  padding-top: 16px;
+}
+.local-ai-panel > * + * {
+  margin-top: 12px;
+}
+.correction-review {
+  display: grid;
+  gap: 12px;
+}
+.feedback-table {
+  overflow-x: auto;
+}
+.feedback-table table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+.feedback-table th,
+.feedback-table td {
+  text-align: left;
+  border-bottom: 1px solid var(--line);
+  padding: 8px;
+  overflow-wrap: anywhere;
+}
 .play-button {
   min-width: 152px;
   min-height: 56px;

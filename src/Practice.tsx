@@ -16,6 +16,7 @@ import type { Clip } from "./core";
 import type { Lesson, Recording } from "./storage";
 import { download, encodeMP3, zipMP3 } from "./export";
 import Timeline from "./Timeline";
+import RecordingFeedback from "./RecordingFeedback";
 type Props = {
   lesson: Lesson;
   clips: Clip[];
@@ -23,6 +24,10 @@ type Props = {
   error: (message: string) => void;
   recording: Recording | undefined;
   setRecording: (r: Recording | undefined) => void;
+  aiBlocked: boolean;
+  onAIBusyChange: (busy: boolean) => void;
+  onPrepareAI: () => void;
+  onCaptureChange: (busy: boolean) => void;
 };
 export default function Practice({
   lesson,
@@ -31,6 +36,10 @@ export default function Practice({
   error,
   recording,
   setRecording,
+  aiBlocked,
+  onAIBusyChange,
+  onPrepareAI,
+  onCaptureChange,
 }: Props) {
   const { gap, mode, a, b, repeat, repeatGap } = lesson;
   const rate = lesson.rate ?? 1,
@@ -76,6 +85,10 @@ export default function Practice({
     [ownVolume, setOwnVolume] = useState(1);
   const priorData = useRef(data),
     gapWaiting = useRef(false);
+  useEffect(() => {
+    onCaptureChange(capturing || micPending);
+  }, [capturing, micPending, onCaptureChange]);
+  useEffect(() => () => onCaptureChange(false), [onCaptureChange]);
   const duration = data ? data.samples.length / data.rate : 0;
   const settings = useRef({ repeat, repeatGap });
   settings.current = { repeat, repeatGap };
@@ -724,7 +737,10 @@ export default function Practice({
         <p className="small">
           録音は端末内だけで扱います。A–B区間（未設定なら全文）に対応づけます。マイクはHTTPSまたはlocalhostが必要です。
         </p>
-        <button disabled={!data || micPending} onClick={() => void record()}>
+        <button
+          disabled={!data || micPending || aiBlocked}
+          onClick={() => void record()}
+        >
           {capturing ? <Square size={18} /> : <Mic size={18} />}{" "}
           {micPending
             ? "マイクを準備中"
@@ -765,6 +781,34 @@ export default function Practice({
               </button>
               <button onClick={() => stop()}>比較を停止</button>
             </div>
+            <RecordingFeedback
+              recording={recording}
+              lang={lesson.lang}
+              reference={
+                lesson.voice === "imported"
+                  ? ""
+                  : data?.spans
+                      .filter(
+                        (span) =>
+                          span.end > recording.a && span.start < recording.b,
+                      )
+                      .map((span) => span.text)
+                      .join(lesson.lang === "en" ? " " : "") || ""
+              }
+              partial={
+                !!data?.spans.some(
+                  (span) =>
+                    (span.start < recording.a && span.end > recording.a) ||
+                    (span.start < recording.b && span.end > recording.b),
+                )
+              }
+              blocked={aiBlocked || capturing}
+              onBusyChange={onAIBusyChange}
+              onPrepare={() => {
+                stop();
+                onPrepareAI();
+              }}
+            />
           </>
         )}
         <div className="row">

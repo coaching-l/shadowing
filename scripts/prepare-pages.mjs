@@ -40,6 +40,22 @@ for (const [folder, metadata] of Object.entries(packages)) {
     await fs.copyFile(source, target);
   }
 }
+// OpenCC's embedded dictionary data has notices outside its root LICENSE.
+await fs.cp(
+  "node_modules/opencc-js/LICENSES",
+  path.join(dist, "licenses", "dependencies", "opencc-js", "LICENSES"),
+  { recursive: true },
+);
+await fs.copyFile(
+  "node_modules/opencc-js/THIRD_PARTY_LICENSES.md",
+  path.join(
+    dist,
+    "licenses",
+    "dependencies",
+    "opencc-js",
+    "THIRD_PARTY_LICENSES.md",
+  ),
+);
 await fs.writeFile(
   path.join(dist, "licenses", "third-party-notices.txt"),
   lines.join("\n") + "\n",
