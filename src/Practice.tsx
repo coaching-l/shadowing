@@ -4,6 +4,8 @@ import {
   Pause,
   SkipBack,
   SkipForward,
+  RotateCcw,
+  RotateCw,
   Mic,
   Square,
   Download,
@@ -49,6 +51,7 @@ export default function Practice({
     recordAudio = useRef<HTMLAudioElement>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined),
     frame = useRef(0),
+    playRequest = useRef(0),
     counter = useRef(1),
     boundary = useRef<{
       a: number;
@@ -77,6 +80,7 @@ export default function Practice({
   const settings = useRef({ repeat, repeatGap });
   settings.current = { repeat, repeatGap };
   function stop(except?: HTMLAudioElement) {
+    playRequest.current++;
     gapWaiting.current = false;
     clearTimeout(timer.current);
     cancelAnimationFrame(frame.current);
@@ -87,10 +91,13 @@ export default function Practice({
     setWaiting(false);
   }
   async function safePlay() {
+    const request = ++playRequest.current;
     try {
       await audio.current!.play();
-      setPlaying(true);
+      if (request === playRequest.current) setPlaying(true);
     } catch (e) {
+      // Seeking, pausing or reaching B can interrupt an older play() promise.
+      if (request !== playRequest.current) return;
       stop();
       error(
         "再生を開始できませんでした。再生ボタンを押してください。 " + String(e),
@@ -102,6 +109,7 @@ export default function Practice({
     end: number,
     looping: boolean,
     after?: () => void,
+    position = start,
   ) {
     stop();
     if (!validRange(start, end, duration)) {
@@ -111,7 +119,8 @@ export default function Practice({
     counter.current = 1;
     setIteration(1);
     boundary.current = { a: start, b: end, loop: looping, after };
-    audio.current!.currentTime = start;
+    audio.current!.currentTime = position;
+    setTime(position);
     void safePlay();
   }
   useEffect(() => {
@@ -191,6 +200,7 @@ export default function Practice({
     setTime(el.currentTime);
     const target = boundary.current;
     if (target && (el.currentTime >= target.b - 0.015 || el.ended)) {
+      playRequest.current++;
       el.pause();
       el.currentTime = target.b;
       setTime(target.b);
@@ -227,7 +237,14 @@ export default function Practice({
       return;
     }
     if (loop) {
-      startRange(a, b, true);
+      const current = audio.current!.currentTime;
+      startRange(
+        a,
+        b,
+        true,
+        undefined,
+        current >= a && current < b - 0.02 ? current : a,
+      );
       return;
     }
     const start =
@@ -235,6 +252,25 @@ export default function Practice({
         ? 0
         : audio.current!.currentTime;
     startRange(start, duration, false);
+  }
+  function skip(seconds: number) {
+    if (!data || capturing) return;
+    if (loop && !validRange(a, b, duration)) {
+      error("0 ≦ A < B ≦ 音声の長さにしてください。");
+      return;
+    }
+    const el = audio.current!;
+    const start = loop ? a : 0,
+      end = loop ? b : duration,
+      next = Math.max(start, Math.min(end, el.currentTime + seconds)),
+      resume = playing || waiting;
+    stop();
+    el.currentTime = next;
+    setTime(next);
+    if (resume && (next < end || loop)) {
+      boundary.current = { a: start, b: end, loop };
+      void safePlay();
+    }
   }
   async function record() {
     if (capturing) {
@@ -492,14 +528,13 @@ export default function Practice({
         />
         <div className="transport">
           <button
-            aria-label="前の文"
+            className="skip-seconds"
+            aria-label="5秒戻る"
             disabled={!data || capturing}
-            onClick={() => {
-              const idx = Math.max(0, active - 1);
-              startRange(data!.spans[idx].start, duration, false);
-            }}
+            onClick={() => skip(-5)}
           >
-            <SkipBack size={22} />
+            <RotateCcw size={22} />
+            <span>5秒</span>
           </button>
           <button
             className="play-button"
@@ -510,14 +545,37 @@ export default function Practice({
             {waiting ? "無音中" : playing ? "一時停止" : "再生"}
           </button>
           <button
+            className="skip-seconds"
+            aria-label="5秒進む"
+            disabled={!data || capturing}
+            onClick={() => skip(5)}
+          >
+            <RotateCw size={22} />
+            <span>5秒</span>
+          </button>
+        </div>
+        <div className="sentence-transport">
+          <button
+            aria-label="前の文"
+            className="small-button"
+            disabled={!data || capturing}
+            onClick={() => {
+              const idx = Math.max(0, active - 1);
+              startRange(data!.spans[idx].start, duration, false);
+            }}
+          >
+            <SkipBack size={16} /> 前の文
+          </button>
+          <button
             aria-label="次の文"
+            className="small-button"
             disabled={!data || capturing}
             onClick={() => {
               const idx = Math.min(data!.spans.length - 1, active + 1);
               startRange(data!.spans[idx].start, duration, false);
             }}
           >
-            <SkipForward size={22} />
+            次の文 <SkipForward size={16} />
           </button>
         </div>
         <div className="speed-section">

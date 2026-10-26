@@ -640,6 +640,19 @@ details[open] > summary {
   border: 0;
   background: none;
 }
+.skip-seconds {
+  flex-direction: column;
+  gap: 0;
+  min-width: 56px;
+  padding: 6px;
+  font-size: 12px;
+}
+.sentence-transport {
+  display: flex;
+  justify-content: center;
+  gap: 16px;
+  margin: -8px 0 20px;
+}
 .play-button {
   min-width: 152px;
   min-height: 56px;
@@ -915,6 +928,9 @@ footer span {
   }
   .transport {
     gap: 9px;
+  }
+  .play-button {
+    min-width: 112px;
   }
   .primary {
     min-height: 48px;

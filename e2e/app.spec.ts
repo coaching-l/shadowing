@@ -793,3 +793,227 @@ test("音声キャッシュは24件の上限と有効期限を守る", async ({ 
   expect(result.bytes).toBeLessThanOrEqual(32 * 1024 * 1024);
   expect(result.cleared).toBeNull();
 });
+
+test("試聴中は試聴ボタンだけが処理中になり、全文生成を開始しない", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    const testWindow = window as typeof window & {
+      speechCalls: { text: string; voice: string }[];
+      releaseSpeech?: () => void;
+    };
+    testWindow.speechCalls = [];
+    const NativeWorker = window.Worker;
+    window.Worker = new Proxy(NativeWorker, {
+      construct(target, args) {
+        if (!String(args[0]).includes("engine.worker"))
+          return Reflect.construct(target, args);
+        const worker = {
+          onmessage: null as ((event: { data: unknown }) => void) | null,
+          onerror: null,
+          terminate() {
+            testWindow.releaseSpeech = undefined;
+          },
+          postMessage(data: { text: string; voice: string }) {
+            testWindow.speechCalls.push(data);
+            testWindow.releaseSpeech = () => {
+              testWindow.releaseSpeech = undefined;
+              worker.onmessage?.({
+                data: {
+                  type: "audio",
+                  samples: Float32Array.from(
+                    { length: 24000 },
+                    (_, i) => 0.1 * Math.sin((2 * Math.PI * 440 * i) / 24000),
+                  ),
+                  rate: 24000,
+                },
+              });
+            };
+          },
+        };
+        return worker;
+      },
+    });
+  });
+  await page.goto("/");
+  await page
+    .getByLabel("本文", { exact: true })
+    .fill("First sentence. Second sentence.");
+  await page
+    .getByRole("button", { name: "この声と設定で確定", exact: true })
+    .click();
+  const full = page.locator(".generate-row button");
+  await page.getByRole("button", { name: "試聴", exact: true }).first().click();
+  const preview = page.getByRole("button", {
+    name: "試聴を準備中…",
+    exact: true,
+  });
+  await expect(preview).toHaveAttribute("aria-busy", "true");
+  await expect(preview.locator(".spin")).toHaveCount(1);
+  await expect(full).toHaveText("全文生成");
+  await expect(full).toHaveAttribute("aria-busy", "false");
+  await expect(full.locator(".spin")).toHaveCount(0);
+  await expect(full).toBeDisabled();
+  await expect(
+    page.getByRole("status", { name: "試聴の状況", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("status", { name: "全文生成の状況", exact: true }),
+  ).toHaveCount(0);
+  await expect(page.getByLabel("1文目の原稿")).toHaveCount(0);
+  await expect
+    .poll(() =>
+      page.evaluate(() => (window as any).speechCalls.map((c: any) => c.text)),
+    )
+    .toEqual(["First sentence."]);
+  await page.evaluate(() => (window as any).releaseSpeech());
+  await expect(full).toBeEnabled();
+  await expect(page.getByText("1文の音声", { exact: true })).toHaveCount(0);
+  await full.click();
+  await expect(full).toHaveText("全文生成中…");
+  await expect(full).toHaveAttribute("aria-busy", "true");
+  await expect(full.locator(".spin")).toHaveCount(1);
+  await expect(
+    page.getByRole("button", { name: "試聴を準備中…", exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("status", { name: "全文生成の状況", exact: true }),
+  ).toBeVisible();
+  await expect
+    .poll(() =>
+      page.evaluate(() => (window as any).speechCalls.map((c: any) => c.text)),
+    )
+    .toEqual(["First sentence.", "Second sentence."]);
+  await page.evaluate(() => (window as any).releaseSpeech());
+  await expect(page.getByText("2文の音声", { exact: true })).toBeVisible();
+  await expect(full).toHaveText("全文生成");
+  await expect(full).toHaveAttribute("aria-busy", "false");
+  // Cancelling a new preview also leaves the full-generation control idle.
+  await page.locator(".voice").nth(1).getByRole("button").click();
+  await page.getByRole("button", { name: "試聴を中止", exact: true }).click();
+  await expect(
+    page.getByRole("status", { name: "試聴の状況", exact: true }),
+  ).toContainText("試聴を中止しました");
+  await expect(full).toBeEnabled();
+  await expect(full.locator(".spin")).toHaveCount(0);
+});
+
+test("5秒送り戻しは停止状態を保ち、再生中・区間リピート・端の位置を扱う", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await expect(
+    page.getByRole("button", { name: "5秒戻る", exact: true }),
+  ).toBeDisabled();
+  await expect(
+    page.getByRole("button", { name: "5秒進む", exact: true }),
+  ).toBeDisabled();
+  // Fresh test-only WAV; no real user's recording or document is used.
+  const rate = 24000,
+    length = 12 * rate;
+  const wav = Buffer.alloc(44 + length * 2);
+  wav.write("RIFF");
+  wav.writeUInt32LE(wav.length - 8, 4);
+  wav.write("WAVEfmt ", 8);
+  wav.writeUInt32LE(16, 16);
+  wav.writeUInt16LE(1, 20);
+  wav.writeUInt16LE(1, 22);
+  wav.writeUInt32LE(rate, 24);
+  wav.writeUInt32LE(rate * 2, 28);
+  wav.writeUInt16LE(2, 32);
+  wav.writeUInt16LE(16, 34);
+  wav.write("data", 36);
+  wav.writeUInt32LE(length * 2, 40);
+  for (let i = 0; i < length; i++)
+    wav.writeInt16LE(
+      Math.round(3000 * Math.sin((2 * Math.PI * 440 * i) / rate)),
+      44 + 2 * i,
+    );
+  await page.getByText("手元の音声で練習する", { exact: true }).click();
+  await page
+    .getByLabel("練習用音声")
+    .setInputFiles({
+      name: "skip-test.wav",
+      mimeType: "audio/wav",
+      buffer: wav,
+    });
+  const audio = page
+    .locator(".player")
+    .locator("xpath=preceding-sibling::audio[1]");
+  const position = () =>
+    audio.evaluate((el: HTMLAudioElement) => el.currentTime);
+  const paused = () => audio.evaluate((el: HTMLAudioElement) => el.paused);
+  const back = page.getByRole("button", { name: "5秒戻る", exact: true });
+  const forward = page.getByRole("button", { name: "5秒進む", exact: true });
+  await forward.click();
+  expect(await position()).toBeCloseTo(5, 1);
+  expect(await paused()).toBe(true);
+  await forward.click();
+  expect(await position()).toBeCloseTo(10, 1);
+  await forward.click();
+  expect(await position()).toBeCloseTo(12, 1);
+  await back.click();
+  expect(await position()).toBeCloseTo(7, 1);
+  await back.click();
+  await back.click();
+  expect(await position()).toBe(0);
+  await page.getByRole("button", { name: "再生", exact: true }).click();
+  await expect.poll(position).toBeGreaterThan(0.1);
+  const before = await position();
+  await forward.click();
+  expect(await position()).toBeGreaterThanOrEqual(before + 4.8);
+  expect(await paused()).toBe(false);
+  await back.click();
+  expect(await position()).toBeLessThan(2);
+  expect(await paused()).toBe(false);
+  await page.getByRole("button", { name: "一時停止", exact: true }).click();
+  await page.getByText("時刻を数字で調整", { exact: true }).click();
+  await page.getByLabel("開始 A（秒）", { exact: true }).fill("2");
+  await page.getByLabel("終了 B（秒）", { exact: true }).fill("10");
+  await page.getByLabel("繰り返し回数").selectOption("0");
+  await page.getByLabel("区間の間の無音（秒）").fill("1");
+  await page.getByLabel("区間リピート").check();
+  await back.click();
+  expect(await position()).toBe(2);
+  await forward.click();
+  expect(await position()).toBe(7);
+  expect(await paused()).toBe(true);
+  await page.getByRole("button", { name: "再生", exact: true }).click();
+  expect(await position()).toBeGreaterThanOrEqual(7);
+  await forward.click();
+  await expect(
+    page.getByRole("button", { name: "無音中", exact: true }),
+  ).toBeVisible();
+  await back.click();
+  await expect(
+    page.getByRole("button", { name: "一時停止", exact: true }),
+  ).toBeVisible();
+  expect(await position()).toBeGreaterThanOrEqual(5);
+  await page.waitForTimeout(1100);
+  expect(await position()).toBeGreaterThan(5.5); // The cancelled gap timer must not jump back to A.
+  await page.getByRole("button", { name: "一時停止", exact: true }).click();
+  await page.getByText("自分の声を録音して比較", { exact: true }).click();
+  await page
+    .getByRole("button", { name: "録音する／録り直す", exact: true })
+    .click();
+  await expect(
+    page.getByRole("button", { name: "録音を停止", exact: true }),
+  ).toBeVisible();
+  await expect(back).toBeDisabled();
+  await expect(forward).toBeDisabled();
+  await page.getByRole("button", { name: "録音を停止", exact: true }).click();
+  await page.setViewportSize({ width: 320, height: 800 });
+  await forward.scrollIntoViewIfNeeded();
+  const row = await page.locator(".transport").boundingBox();
+  if (!row) throw Error("transport missing");
+  for (const button of [back, page.locator(".play-button"), forward]) {
+    const box = await button.boundingBox();
+    if (!box) throw Error("transport button missing");
+    expect(box.width).toBeGreaterThanOrEqual(44);
+    expect(box.x).toBeGreaterThanOrEqual(0);
+    expect(box.x + box.width).toBeLessThanOrEqual(320);
+  }
+  await page
+    .locator(".player")
+    .screenshot({ path: "/tmp/shadowing-skip-mobile.png" });
+});

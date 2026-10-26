@@ -24,6 +24,7 @@ import { BrowserEngine, VOICES, ZH_VOICES } from "./engine";
 import { saveLesson, listLessons, deleteLesson } from "./storage";
 import type { Lesson, Recording } from "./storage";
 import Practice from "./Practice";
+type SpeechTask = { kind: "preview"; voice: string } | { kind: "full" };
 const fresh = (): Lesson => ({
   id: crypto.randomUUID(),
   title: "新しい教材",
@@ -48,8 +49,9 @@ export default function App() {
     [library, setLibrary] = useState<Lesson[]>([]),
     [notice, setNotice] = useState(""),
     [error, setError] = useState(""),
-    [busy, setBusy] = useState(false),
+    [task, setTask] = useState<SpeechTask | null>(null),
     [progress, setProgress] = useState(""),
+    [progressKind, setProgressKind] = useState<SpeechTask["kind"]>("preview"),
     [failed, setFailed] = useState<number | null>(null),
     [confirmed, setConfirmed] = useState(""),
     [previewText, setPreviewText] = useState(""),
@@ -59,6 +61,7 @@ export default function App() {
     [importing, setImporting] = useState(false),
     [importProgress, setImportProgress] = useState(""),
     [saving, setSaving] = useState(false);
+  const busy = task !== null;
   const rawInput = useRef<HTMLTextAreaElement>(null),
     engine = useRef(new BrowserEngine()),
     preview = useRef<HTMLAudioElement>(null),
@@ -118,6 +121,11 @@ export default function App() {
   function cancel() {
     cancelled.current = true;
     engine.current.cancel();
+    setProgress(
+      task?.kind === "preview"
+        ? "試聴を中止しました。"
+        : "全文生成を中止しました。成功した文の音声は再利用できます。",
+    );
   }
   function reset() {
     stopPreview();
@@ -173,7 +181,8 @@ export default function App() {
   async function listen(voice: string) {
     if (busy) return;
     stopPreview();
-    setBusy(true);
+    setTask({ kind: "preview", voice });
+    setProgressKind("preview");
     setError("");
     setProgress("試聴を準備中…");
     cancelled.current = false;
@@ -217,9 +226,10 @@ export default function App() {
           : "試聴音声を生成しました。",
       );
     } catch (e) {
+      if (!cancelled.current) setProgress("試聴を完了できませんでした。");
       report(String(e));
     } finally {
-      setBusy(false);
+      setTask(null);
     }
   }
   async function generate() {
@@ -229,7 +239,9 @@ export default function App() {
       return;
     }
     stopPreview();
-    setBusy(true);
+    setTask({ kind: "full" });
+    setProgressKind("full");
+    setProgress("全文生成を準備中…");
     setError("");
     setFailed(null);
     cancelled.current = false;
@@ -292,9 +304,10 @@ export default function App() {
       if (!cancelled.current)
         setProgress("全文の音声を生成しました。練習画面で再生できます。");
     } catch (e) {
+      if (!cancelled.current) setProgress("全文生成を完了できませんでした。");
       report(String(e));
     } finally {
-      setBusy(false);
+      setTask(null);
     }
   }
   async function save() {
@@ -377,6 +390,23 @@ export default function App() {
       await ctx?.close();
       setImporting(false);
     }
+  }
+  function speechProgress(kind: SpeechTask["kind"]) {
+    if (progressKind !== kind || (!busy && !progress)) return null;
+    return (
+      <div
+        className="progress"
+        role="status"
+        aria-label={kind === "preview" ? "試聴の状況" : "全文生成の状況"}
+      >
+        <span>{progress}</span>
+        {task?.kind === kind && (
+          <button className="small-button" onClick={cancel}>
+            {kind === "preview" ? "試聴を中止" : "全文生成を中止"}
+          </button>
+        )}
+      </div>
+    );
   }
   return (
     <>
@@ -832,10 +862,21 @@ export default function App() {
                       <button
                         className="small-button"
                         disabled={busy || importing}
+                        aria-busy={
+                          task?.kind === "preview" && task.voice === voice.id
+                        }
                         onClick={() => void listen(voice.id)}
                       >
-                        <Headphones size={15} />
-                        {previewVoice === voice.id ? "もう一度聴く" : "試聴"}
+                        {task?.kind === "preview" && task.voice === voice.id ? (
+                          <LoaderCircle className="spin" size={15} />
+                        ) : (
+                          <Headphones size={15} />
+                        )}
+                        {task?.kind === "preview" && task.voice === voice.id
+                          ? "試聴を準備中…"
+                          : previewVoice === voice.id
+                            ? "もう一度聴く"
+                            : "試聴"}
                       </button>
                     </div>
                   ))}
@@ -845,6 +886,7 @@ export default function App() {
                   controls={!!previewVoice}
                   onEnded={() => setPreviewVoice("")}
                 />
+                {speechProgress("preview")}
                 <p className="small">
                   初回はHugging
                   Faceからモデル、jsDelivrから実行ファイルを取得します。本文は外部送信せず、端末内のWebAssemblyで生成します。音声広告やサービス名を挿入する処理はありません。初回取得には時間がかかります。
@@ -902,6 +944,7 @@ export default function App() {
                   <button
                     className="primary"
                     aria-describedby="generation-help"
+                    aria-busy={task?.kind === "full"}
                     disabled={
                       busy ||
                       importing ||
@@ -910,12 +953,16 @@ export default function App() {
                     }
                     onClick={() => void generate()}
                   >
-                    {busy ? (
+                    {task?.kind === "full" ? (
                       <LoaderCircle className="spin" size={18} />
                     ) : (
                       <ArrowRight size={18} />
                     )}{" "}
-                    {failed !== null ? "失敗した文から再試行" : "全文生成"}
+                    {task?.kind === "full"
+                      ? "全文生成中…"
+                      : failed !== null
+                        ? "失敗した文から再試行"
+                        : "全文生成"}
                   </button>
                 </div>
                 {failed !== null && (
@@ -925,16 +972,7 @@ export default function App() {
                   </p>
                 )}
               </>
-              {(busy || progress) && (
-                <div className="progress" role="status">
-                  <span>{progress}</span>
-                  {busy && (
-                    <button className="small-button" onClick={cancel}>
-                      生成を中止
-                    </button>
-                  )}
-                </div>
-              )}
+              {speechProgress("full")}
             </section>
             <section className="card compact">
               <details>
