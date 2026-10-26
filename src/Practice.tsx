@@ -869,6 +869,7 @@ export default function Practice({
             1ファイルあたりの文数
             <input
               type="number"
+              aria-describedby="mp3-split-help"
               min="1"
               max="100"
               value={group}
@@ -884,6 +885,10 @@ export default function Practice({
             文数で分割する
           </button>
         </div>
+        <p id="mp3-split-help" className="small">
+          「文数で分割する」を押すと、指定した文数ごとにMP3ファイルを作ります。
+          例：本文が30文で「10」に設定すると、10文ずつ3つのMP3になります。
+        </p>
         {exporting && <p role="status">MP3に変換中…</p>}
         {exports.map((f) => (
           <button
