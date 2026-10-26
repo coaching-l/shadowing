@@ -151,7 +151,10 @@ export default function App() {
       update({ text, sentences: [], title: file.name.replace(/\.[^.]+$/, "") });
       setConfirmed("");
       setNotice(
-        "本文を取り込みました。読み上げ範囲を確認して、声を確定してください。文の区切りは全文生成の開始時に自動で作成します。",
+        (file.name.toLowerCase().endsWith(".pages")
+          ? "Pagesの本文を取り込みました。図・表・テキストボックス内の文字は含まれないため、本文をご確認ください。"
+          : "本文を取り込みました。") +
+          "読み上げ範囲を確認して、声を確定してください。文の区切りは全文生成の開始時に自動で作成します。",
       );
     } catch (e) {
       report(String(e));
@@ -622,13 +625,16 @@ export default function App() {
                     ? importProgress || "読み込み中…"
                     : "資料を選んで取り込む"}
                 </strong>
-                <span>Word（.docx）・PDF・テキスト（.txt）／最大20 MB</span>
+                <span>
+                  Pages（.pages）・Word（.docx）・PDF・テキスト（.txt）／最大20
+                  MB
+                </span>
                 <input
                   onPointerDown={primeDocumentReaders}
                   onFocus={primeDocumentReaders}
                   aria-label="資料ファイル"
                   type="file"
-                  accept=".docx,.pdf,.txt"
+                  accept=".pages,.docx,.pdf,.txt"
                   disabled={busy || importing}
                   onChange={(e) => {
                     if (e.target.files?.[0]) void loadFile(e.target.files[0]);

@@ -13,6 +13,7 @@
   "dependencies": {
     "@breezystack/lamejs": "^1.2.7",
     "@huggingface/transformers": "3.8.1",
+    "@mdgate/iwork-common": "0.6.25",
     "dictionary-en": "4.0.0",
     "dictionary-en-gb": "3.0.0",
     "diff": "8.0.2",

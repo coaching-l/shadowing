@@ -36,6 +36,14 @@ export async function extractDocument(
     throw Error("資料の上限は20 MBです。ファイルを分けてください。");
   const ext = file.name.split(".").pop()?.toLowerCase();
   if (ext === "txt") return file.text();
+  if (ext === "pages") {
+    onProgress("Pagesの本文を取り出しています…");
+    const [{ extractPages }, arrayBuffer] = await Promise.all([
+      import("./pages"),
+      file.arrayBuffer(),
+    ]);
+    return extractPages(new Uint8Array(arrayBuffer));
+  }
   if (ext === "docx") {
     onProgress("Wordの本文を取り出しています…");
     const [mammoth, arrayBuffer] = await Promise.all([
@@ -86,5 +94,5 @@ export async function extractDocument(
       await pdf.destroy();
     }
   }
-  throw Error("対応形式は .docx・文字情報のある .pdf・.txt です。");
+  throw Error("対応形式は .pages・.docx・文字情報のある .pdf・.txt です。");
 }

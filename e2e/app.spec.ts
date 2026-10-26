@@ -3,6 +3,70 @@ import { zipSync, strToU8, unzipSync } from "fflate";
 import { PDFDocument, StandardFonts } from "pdf-lib";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
+import { gzipSync } from "fflate";
+import { pagesFixture } from "../tests/fixtures/pages";
+
+test("Pagesの本文取り込み・旧形式・失敗時の原稿保持", async ({ page }) => {
+  await page.goto("/");
+  const upload = page.getByLabel("資料ファイル");
+  await expect(upload).toHaveAttribute("accept", /\.pages/);
+  const editor = page.getByLabel("本文", { exact: true });
+  const source = "She stifled a yawn.\n\nTake a deep breath.";
+  await upload.setInputFiles({
+    name: "practice.pages",
+    mimeType: "application/vnd.apple.pages",
+    buffer: Buffer.from(pagesFixture(source)),
+  });
+  await expect(editor).toHaveValue(source);
+  await page.getByRole("button", { name: "文に分割する", exact: true }).click();
+  await expect(page.getByLabel("2文目の原稿")).toHaveValue(
+    "Take a deep breath.",
+  );
+
+  await page.getByLabel("練習する言語").selectOption("zh");
+  const chinese = "今天一起练习。\n请慢慢说。";
+  await upload.setInputFiles({
+    name: "chinese.PAGES",
+    mimeType: "application/octet-stream",
+    buffer: Buffer.from(pagesFixture(chinese, true)),
+  });
+  await expect(editor).toHaveValue(chinese);
+
+  const xml = strToU8(
+    '<?xml version="1.0"?><sl:document xmlns:sl="http://developer.apple.com/namespaces/sl" xmlns:sf="http://developer.apple.com/namespaces/sf"><sl:section-prototypes><sf:text-storage sf:kind="body"><sf:text-body><sf:p>Unused template.</sf:p></sf:text-body></sf:text-storage></sl:section-prototypes><sf:text-storage sf:kind="body"><sf:text-body><sf:p>She sti<sf:span>fl</sf:span>ed a yawn.<sf:br/></sf:p><sf:p>今天一起练习。<sf:br/></sf:p><sf:p>今天一起练习。<sf:br/></sf:p></sf:text-body></sf:text-storage></sl:document>',
+  );
+  for (const compressed of [false, true]) {
+    await upload.setInputFiles({
+      name: "legacy.pages",
+      mimeType: "application/vnd.apple.pages",
+      buffer: Buffer.from(
+        zipSync({
+          [compressed ? "index.xml.gz" : "index.xml"]: compressed
+            ? gzipSync(xml)
+            : xml,
+        }),
+      ),
+    });
+    await expect(editor).toHaveValue(
+      "She stifled a yawn.\n今天一起练习。\n今天一起练习。",
+    );
+  }
+  const before = await editor.inputValue();
+  await upload.setInputFiles({
+    name: "broken.pages",
+    mimeType: "application/octet-stream",
+    buffer: Buffer.from("Not a Pages file."),
+  });
+  await expect(page.getByRole("alert")).toContainText("PDFまたはWord");
+  await expect(editor).toHaveValue(before);
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBe(true);
+});
+
 async function setPlaybackSpeed(
   page: import("@playwright/test").Page,
   value: number,
