@@ -3,6 +3,8 @@ import type { Lang } from "./core";
 import { localAI } from "./local-ai";
 import { validateCorrection } from "./feedback";
 import { MAX_PROOFREADING_CHARS, proofreadingChunks } from "./proofreading";
+import { correctionEdits, applyCorrectionEdits } from "./correction-review";
+import type { CorrectionEdit } from "./correction-review";
 type Selection = { start: number; end: number };
 type Props = {
   text: string;
@@ -33,6 +35,10 @@ export default function Proofreader({
     selection: Selection;
     original: string;
     text: string;
+    proposed: string;
+    edits: CorrectionEdit[];
+    accepted: boolean[];
+    manual: boolean;
   } | null>(null);
   const alive = useRef(true),
     active = useRef(false),
@@ -104,7 +110,16 @@ export default function Proofreader({
       }
       const result = corrected.join("");
       if (alive.current && !cancelled.current) {
-        setCandidate({ selection: chosen, original, text: result });
+        const edits = correctionEdits(original, result, lang);
+        setCandidate({
+          selection: chosen,
+          original,
+          text: result,
+          proposed: result,
+          edits,
+          accepted: edits.map(() => true),
+          manual: false,
+        });
         setStatus(
           result === original
             ? "修正候補はありませんでした。誤りがないことを保証するものではありません。"
@@ -132,7 +147,8 @@ export default function Proofreader({
     <details className="local-ai-panel">
       <summary>端末内でタイポを確認（試験機能）</summary>
       <p className="small">
-        英語・中国語の本文全体または選択範囲を最大5,000文字まで確認します。短い範囲に分けて順番に処理し、最後に候補をまとめて表示します。原文は自動で書き換えません。英語は米国英語の辞書でスペルを確認し、中国語は簡体字向けのAIモデル（初回約104
+        英語・中国語の本文全体または選択範囲を最大5,000文字まで確認します。短い範囲に分けて順番に処理し、最後に候補をまとめて表示します。原文は自動で書き換えません。英語は文脈を使う校正モデル（初回約91
+        MB）、中国語は簡体字向けの誤字修正モデル（初回約104
         MB）を使います。無料・ログイン不要で、本文を外部AIへ送りません。人名・専門用語や文意が変わっていないか確認してください。
       </p>
       <button disabled={blocked || !text.trim()} onClick={() => void check()}>
@@ -155,8 +171,95 @@ export default function Proofreader({
         </p>
       )}
       {error && <p role="alert">{error}</p>}
-      {candidate && candidate.text !== candidate.original && (
+      {candidate && candidate.proposed !== candidate.original && (
         <div className="correction-review">
+          {!candidate.manual ? (
+            <details open={candidate.edits.length <= 20}>
+              <summary>
+                変更候補 {candidate.edits.length}件（チェックで採用・除外）
+              </summary>
+              <div className="toolbar">
+                {[true, false].map((accept) => (
+                  <button
+                    key={String(accept)}
+                    className="small-button"
+                    disabled={blocked}
+                    onClick={() => {
+                      const accepted = candidate.edits.map(() => accept);
+                      setCandidate({
+                        ...candidate,
+                        accepted,
+                        text: applyCorrectionEdits(
+                          candidate.original,
+                          candidate.edits,
+                          accepted,
+                        ),
+                      });
+                    }}
+                  >
+                    {accept ? "すべて採用" : "すべて外す"}
+                  </button>
+                ))}
+              </div>
+              <div className="correction-changes">
+                {candidate.edits.map((edit, index) => (
+                  <label className="correction-change" key={index}>
+                    <input
+                      type="checkbox"
+                      aria-label={`候補${index + 1}を採用`}
+                      disabled={blocked}
+                      checked={candidate.accepted[index]}
+                      onChange={(e) => {
+                        const accepted = candidate.accepted.map((value, i) =>
+                          i === index ? e.target.checked : value,
+                        );
+                        setCandidate({
+                          ...candidate,
+                          accepted,
+                          text: applyCorrectionEdits(
+                            candidate.original,
+                            candidate.edits,
+                            accepted,
+                          ),
+                        });
+                      }}
+                    />
+                    <span>
+                      <small>
+                        {candidate.original.slice(
+                          Math.max(0, edit.start - 18),
+                          edit.start,
+                        )}
+                      </small>
+                      <del>{edit.original || "（挿入）"}</del> →{" "}
+                      <ins>{edit.replacement || "（削除）"}</ins>
+                      <small>
+                        {candidate.original.slice(edit.end, edit.end + 18)}
+                      </small>
+                    </span>
+                  </label>
+                ))}
+              </div>
+            </details>
+          ) : (
+            <button
+              className="small-button"
+              disabled={blocked}
+              onClick={() =>
+                setCandidate({
+                  ...candidate,
+                  manual: false,
+                  text: applyCorrectionEdits(
+                    candidate.original,
+                    candidate.edits,
+                    candidate.accepted,
+                  ),
+                })
+              }
+            >
+              手動編集を取り消して候補選択に戻す
+            </button>
+          )}
           <label>
             修正前
             <textarea readOnly value={candidate.original} rows={3} />
@@ -169,13 +272,21 @@ export default function Proofreader({
               disabled={blocked}
               rows={3}
               onChange={(e) =>
-                setCandidate({ ...candidate, text: e.target.value })
+                setCandidate({
+                  ...candidate,
+                  text: e.target.value,
+                  manual: true,
+                })
               }
             />
           </label>
           <div className="toolbar">
             <button
-              disabled={blocked || !candidate.text.trim()}
+              disabled={
+                blocked ||
+                !candidate.text.trim() ||
+                candidate.text === candidate.original
+              }
               onClick={() =>
                 onApply(candidate.selection, candidate.original, candidate.text)
               }

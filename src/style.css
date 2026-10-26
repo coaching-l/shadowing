@@ -665,6 +665,36 @@ details[open] > summary {
   display: grid;
   gap: 12px;
 }
+.correction-changes {
+  display: grid;
+  gap: 8px;
+  max-height: 320px;
+  overflow-y: auto;
+  margin-top: 12px;
+}
+.correction-change {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+  overflow-wrap: anywhere;
+}
+.correction-change input {
+  flex-shrink: 0;
+  margin-top: 6px;
+}
+.correction-change small {
+  color: var(--muted);
+  font-weight: 400;
+}
+.correction-change ins {
+  background: var(--gold-soft);
+  color: var(--heading);
+  text-decoration: none;
+  padding: 0 3px;
+}
 .feedback-table {
   overflow-x: auto;
 }

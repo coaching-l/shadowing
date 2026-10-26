@@ -62,10 +62,32 @@
   <h2>端末内のタイポ確認・録音フィードバック</h2>
   <ul>
     <li>
-      英語スペル確認: <a href="dependencies/nspell/license">nspell（MIT）</a> /
+      英語の文脈校正:
+      <a
+        href="https://huggingface.co/visheratin/t5-efficient-mini-grammar-correction"
+        >T5-Efficient-MINI 原モデル</a
+      >
+      /
+      <a
+        href="https://huggingface.co/TonyRaju/visheratin-t5-mini-grammar-correction-onnx-int8"
+        >ONNX INT8変換版</a
+      >
+      / <a href="english-gec-model-MIT.txt">作者・出典・MITライセンス</a>。
+    </li>
+    <li>
+      英米辞書の検査: <a href="dependencies/nspell/license">nspell（MIT）</a> /
       <a href="dependencies/dictionary-en/license"
         >dictionary-en 4.0.0（辞書の通知・利用条件）</a
+      >
+      /
+      <a href="dependencies/dictionary-en-gb/license">dictionary-en-gb 3.0.0</a
       >。辞書データは変更せず利用します。
+    </li>
+    <li>
+      変更候補の表示:
+      <a href="dependencies/diff/LICENSE">diff（BSD-3-Clause）</a> / 推論:
+      <a href="onnxruntime-MIT.txt">ONNX Runtime Web（MIT）</a
+      >。
     </li>
     <li>
       中国語の誤字候補:

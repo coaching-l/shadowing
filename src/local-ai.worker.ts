@@ -4,6 +4,12 @@ import {
   AutoModelForMaskedLM,
   AutoTokenizer,
 } from "@huggingface/transformers";
+import {
+  mapHanPositions,
+  protectedChineseRanges,
+  plausibleChineseChange,
+  chineseChangeConfidence,
+} from "./spelling-zh";
 import type {
   PreTrainedModel,
   PreTrainedTokenizer,
@@ -15,6 +21,7 @@ let corrector:
   | { model: PreTrainedModel; tokenizer: PreTrainedTokenizer }
   | undefined;
 let recognizer: AutomaticSpeechRecognitionPipeline | undefined;
+let english: import("./english-context").EnglishContextCorrector | undefined;
 let working = false;
 self.onmessage = async ({ data }) => {
   if (working) return;
@@ -33,17 +40,20 @@ self.onmessage = async ({ data }) => {
           await corrector.model.dispose();
           corrector = undefined;
         }
-        self.postMessage({
-          type: "status",
-          message: "端末内の英語辞書でスペルを確認しています…",
-        });
-        const { correctEnglish } = await import("./spelling-en");
-        text = correctEnglish(data.text);
+        const { EnglishContextCorrector } = await import("./english-context");
+        english ??= new EnglishContextCorrector();
+        text = await english.correct(data.text, (message) =>
+          self.postMessage({ type: "status", message }),
+        );
       } else {
-        if (/[A-Za-z\d\p{Script=Hiragana}\p{Script=Katakana}]/u.test(data.text))
-          throw Error(
-            "中国語のタイポ確認は漢字・句読点・空白の範囲でお試しください。",
-          );
+        if (english) {
+          await english.dispose();
+          english = undefined;
+        }
+        if (!/\p{Script=Han}/u.test(data.text)) {
+          self.postMessage({ type: "result", text: data.text });
+          return;
+        }
         if (!corrector) {
           const modelId = "Xenova/macbert4csc-base-chinese";
           const revision = "7ebfe81cf502576e93c844b95354840b2ecb5c28";
@@ -61,15 +71,20 @@ self.onmessage = async ({ data }) => {
           ]);
           corrector = { model, tokenizer };
         }
-        const chars = [...(data.text as string)],
-          positions = chars
-            .map((char, index) => ({ char, index }))
-            .filter((x) => !/^\s$/u.test(x.char));
-        const inputs = corrector.tokenizer(data.text, { truncation: false });
-        if (inputs.input_ids.dims.at(-1)! !== positions.length + 2)
+        const source = data.text as string;
+        const inputs = corrector.tokenizer(source, { truncation: false });
+        const mapped = mapHanPositions(source, (part) =>
+          corrector!.tokenizer.encode(part, { add_special_tokens: false }),
+        );
+        const actual = Array.from(inputs.input_ids.data, Number);
+        if (
+          actual.length !== mapped.ids.length + 2 ||
+          mapped.ids.some((id, i) => id !== actual[i + 1])
+        )
           throw Error(
-            "この文字の並びを安全に照合できませんでした。漢字中心の短い範囲を選んでください。",
+            "文字位置を安全に照合できませんでした。短い範囲を選んでください。",
           );
+        const protectedRanges = protectedChineseRanges(source);
         self.postMessage({
           type: "status",
           message: "端末内AIで中国語の誤字を確認しています…",
@@ -81,27 +96,45 @@ self.onmessage = async ({ data }) => {
           throw Error(
             "中国語の修正候補を計算できませんでした。短い範囲でお試しください。",
           );
-        for (let i = 0; i < positions.length; i++) {
-          if (!/^\p{Script=Han}$/u.test(positions[i].char)) continue;
-          const offset = (i + 1) * size;
-          let best = 0;
-          for (let j = 1; j < size; j++)
-            if (scores[offset + j] > scores[offset + best]) best = j;
-          const original = Number(inputs.input_ids.data[i + 1]);
+        const replacements: { start: number; end: number; text: string }[] = [];
+        for (const position of mapped.positions) {
           if (
-            best === original ||
-            scores[offset + best] - scores[offset + original] < 1
+            protectedRanges.some(
+              (range) =>
+                position.start < range.end && position.end > range.start,
+            )
           )
             continue;
+          const originalId = actual[position.token];
+          if (originalId === corrector.tokenizer.unk_token_id) continue;
+          const { best, probability, margin } = chineseChangeConfidence(
+            scores,
+            position.token * size,
+            size,
+            originalId,
+          );
+          if (best === originalId || probability < 0.9 || margin < 2) continue;
           const replacement = corrector.tokenizer
             .decode([best], { skip_special_tokens: true })
             .trim();
-          if (/^\p{Script=Han}$/u.test(replacement))
-            chars[positions[i].index] = replacement;
+          if (
+            /^\p{Script=Han}$/u.test(replacement) &&
+            plausibleChineseChange(position.original, replacement)
+          )
+            replacements.push({ ...position, text: replacement });
         }
-        text = chars.join("");
+        text = source;
+        for (const replacement of replacements.reverse())
+          text =
+            text.slice(0, replacement.start) +
+            replacement.text +
+            text.slice(replacement.end);
       }
     } else if (data.kind === "transcribe") {
+      if (english) {
+        await english.dispose();
+        english = undefined;
+      }
       if (corrector) {
         await corrector.model.dispose();
         corrector = undefined;

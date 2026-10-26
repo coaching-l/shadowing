@@ -38,8 +38,8 @@ export class LocalAI {
           done();
           resolve(data.text);
         } else if (data.type === "error") {
-          done();
-          reject(Error(data.message));
+          // Stop pending downloads and discard a partially initialized model.
+          this.release(data.message);
         } else if (data.type === "status") progress(data.message);
         else if (data.type === "progress") {
           const p = data.progress;

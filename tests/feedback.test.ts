@@ -110,14 +110,23 @@ it("タイポ候補に選択範囲の前後の空白を保つ", () => {
 });
 
 it("英語のスペル確認は本文の質問に答えず、句読点・空白を維持する", async () => {
-  const { correctEnglish } = await import("../src/spelling-en");
-  expect(correctEnglish("This sentnce has a speling eror.")).toBe(
-    "This sentence has a spelling error.",
-  );
-  expect(correctEnglish("What would you like to focus on today?")).toBe(
-    "What would you like to focus on today?",
-  );
-  expect(correctEnglish("  COACHING-L\nI like learning English.\n")).toBe(
-    "  COACHING-L\nI like learning English.\n",
-  );
+  const { filterEnglishCorrection } = await import("../src/spelling-en");
+  expect(
+    filterEnglishCorrection(
+      "This sentnce has a speling eror.",
+      "This sentence has a spelling error.",
+    ),
+  ).toBe("This sentence has a spelling error.");
+  expect(
+    filterEnglishCorrection(
+      "What would you like to focus on today?",
+      "What would you like to focus on today?",
+    ),
+  ).toBe("What would you like to focus on today?");
+  expect(
+    filterEnglishCorrection(
+      "  COACHING-L\nI like learning English.\n",
+      "COACHING-L I like learning English.",
+    ),
+  ).toBe("  COACHING-L\nI like learning English.\n");
 });

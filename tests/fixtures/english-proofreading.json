@@ -1,0 +1,92 @@
+[
+  {
+    "source": "I hav a smal problm.",
+    "model": "I have a small problem.",
+    "expected": "I have a small problem."
+  },
+  {
+    "source": "He recieved teh mesage yestarday.",
+    "model": "He received the message yesterday.",
+    "expected": "He received the message yesterday."
+  },
+  {
+    "source": "This sentnce has a speling eror.",
+    "model": "This sentence has a spelling error.",
+    "expected": "This sentence has a spelling error."
+  },
+  {
+    "source": "I am intrested in learning Engish.",
+    "model": "I am interested in learning English.",
+    "expected": "I am interested in learning English."
+  },
+  {
+    "source": "She go to school every day.",
+    "model": "She goes to school every day.",
+    "expected": "She goes to school every day."
+  },
+  {
+    "source": "I don't no what to do.",
+    "model": "I don't know what to do.",
+    "expected": "I don't know what to do."
+  },
+  {
+    "source": "We discussed the project with Dr. Nakamura and Ms. Xiaoyu.",
+    "model": "We discussed the project with Dr. Nakamura and Ms. Xiaoyu.",
+    "expected": "We discussed the project with Dr. Nakamura and Ms. Xiaoyu."
+  },
+  {
+    "source": "Please email Alex at alex@example.com and visit https://coaching-l.net.",
+    "model": "Please email Alex at an example.com and visit https://coaching.net.",
+    "expected": "Please email Alex at alex@example.com and visit https://coaching-l.net."
+  },
+  {
+    "source": "The colour of this organisation's logo is blue.",
+    "model": "The colour of this organisation's logo is blue.",
+    "expected": "The colour of this organisation's logo is blue."
+  },
+  {
+    "source": "Use React, TypeScript, IndexedDB and Whisper in COACHING-L.",
+    "model": "Use React, TypeScript, IndexedDB, and Whisper in COACHINGL.",
+    "expected": "Use React, TypeScript, IndexedDB and Whisper in COACHING-L."
+  },
+  {
+    "source": "The invoice is €1,250.50, dated 2026-10-26.",
+    "model": "The invoice is €1,250, dated,2026-1026.",
+    "expected": "The invoice is €1,250.50, dated 2026-10-26."
+  },
+  {
+    "source": "What would you like to focus on today?",
+    "model": "What would you like to focus on today?",
+    "expected": "What would you like to focus on today?"
+  },
+  {
+    "source": "I look forward to hearing from you.",
+    "model": "I look forward to hearing from you.",
+    "expected": "I look forward to hearing from you."
+  },
+  {
+    "source": "We need to adress this issue before tomorow.",
+    "model": "We need to address this issue before tomorrow.",
+    "expected": "We need to address this issue before tomorrow."
+  },
+  {
+    "source": "Can you accomodate three seperate groups?",
+    "model": "Can you accommodate three separate groups?",
+    "expected": "Can you accommodate three separate groups?"
+  },
+  {
+    "source": "I definately recommend this oportunity.",
+    "model": "I definitely recommend this opportunity.",
+    "expected": "I definitely recommend this opportunity."
+  },
+  {
+    "source": "I love learning English.\nPlease keep this line break.",
+    "model": "I love learning English. Please keep this line a break.",
+    "expected": "I love learning English.\nPlease keep this line break."
+  },
+  {
+    "source": "I has been studying English for three years.",
+    "model": "I have been studying English for three years.",
+    "expected": "I have been studying English for three years."
+  }
+]

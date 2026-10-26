@@ -31,3 +31,10 @@ pinyin-pro 3.29.5はMITライセンス（https://github.com/zh-lx/pinyin-pro）�
 - OpenCC.js 1.4.2はMIT、組込み辞書データはApache-2.0。root LICENSEに加え、同梱THIRD_PARTY_LICENSES.mdとLICENSESディレクトリも配信物へ複製します。
 
 モデルの固定revision・容量・実行方式と制約はLOCAL-AI.mdに記載しています。この追加により既存のGPL/LGPL部品を含むアプリ全体の配布適合性まで確認済みとなるものではありません。
+
+## 文脈校正の追加依存
+
+- 英語の原モデル `visheratin/t5-efficient-mini-grammar-correction` はモデルカードにMIT表記。作者はAlexander Visheratin。使用するONNX INT8変換版はTonyRajuによる `visheratin-t5-mini-grammar-correction-onnx-int8`、固定revisionと3つのファイルのSHA-256をコードに保持しています。重みは改変せず取得し、作者・変換元・変換版への参照とMIT本文を`public/licenses/english-gec-model-MIT.txt`に同梱します。基礎となるGoogle T5のApache-2.0本文も維持します。
+- dictionary-en-gb 3.0.0はMIT/BSD表記。辞書の全通知を配布パッケージのlicenseファイルから保持します。米国・英国の両辞書を検査に使い、綴りの地域差だけの変更を抑えます。
+- diff 8.0.2はBSD-3-Clause（パッケージLICENSEを配信物へ複製）、ONNX Runtime WebはMIT。直接依存に固定して使用します。
+- 非商用条件のあるvennify、CoEdITのモデルは採用していません。この追加で既存のGPL/LGPLを含む配布条件全体が解決したという意味ではありません。

@@ -1215,7 +1215,9 @@ test("録音を端末内で文字起こしし、編集可能な認識結果と�
   ).toBeVisible();
 });
 
-test("実際の英語スペル辞書は外部AIへ接続せず動く", async ({ page }) => {
+test("英語校正の取得失敗で本文を維持し、無音や長すぎる録音を拒否する", async ({
+  page,
+}) => {
   let modelRequests = 0;
   await page.route("https://huggingface.co/**", (route) => {
     modelRequests++;
@@ -1230,11 +1232,12 @@ test("実際の英語スペル辞書は外部AIへ接続せず動く", async ({ 
   await page
     .getByRole("button", { name: "タイポの修正候補を作る", exact: true })
     .click();
-  await expect(page.getByLabel("修正候補（編集できます）")).toHaveValue(
-    "This sentence has a spelling error.",
-  );
+  await expect(page.getByRole("alert")).toContainText("停止しました", {
+    timeout: 30000,
+  });
+  await expect(page.getByLabel("修正候補（編集できます）")).toHaveCount(0);
   await expect(editor).toHaveValue("This sentnce has a speling eror.");
-  expect(modelRequests).toBe(0);
+  expect(modelRequests).toBeGreaterThan(0);
   const errors = await page.evaluate(async () => {
     const { decodeRecording } = await import("/src/feedback.ts");
     const { wavBlob } = await import("/src/core.ts");
@@ -1325,6 +1328,37 @@ test("端末内AIの中止とモデルエラー後も本文を残し操作を再
 test("英語5,000文字をまとめて確認し、末尾まで候補を保持して反映できる", async ({
   page,
 }) => {
+  // Verify chunk/review plumbing with a controlled response; real model checks are separate.
+  await page.addInitScript(() => {
+    const NativeWorker = window.Worker;
+    window.Worker = new Proxy(NativeWorker, {
+      construct(target, args) {
+        if (!String(args[0]).includes("local-ai.worker"))
+          return Reflect.construct(target, args);
+        const worker = {
+          onmessage: null as any,
+          onerror: null,
+          terminate() {},
+          postMessage(data: any) {
+            setTimeout(
+              () =>
+                worker.onmessage?.({
+                  data: {
+                    type: "result",
+                    text: data.text
+                      .replaceAll("sentnce", "sentence")
+                      .replaceAll("speling", "spelling")
+                      .replaceAll("eror", "error"),
+                  },
+                }),
+              10,
+            );
+          },
+        };
+        return worker;
+      },
+    });
+  });
   await page.goto("/");
   const unit = "This sentnce has a speling eror.\n";
   const full = unit.repeat(Math.floor(4970 / unit.length));
@@ -1448,4 +1482,151 @@ test("タイポ確認の途中中止・途中失敗では部分候補を反映�
       (window as any).chunkCalls.every((text: string) => text.length <= 300),
     ),
   ).toBe(true);
+});
+
+test("校正の変更候補を個別に外し、手動編集も確認して反映できる", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    const Native = window.Worker;
+    window.Worker = new Proxy(Native, {
+      construct(target, args) {
+        if (!String(args[0]).includes("local-ai.worker"))
+          return Reflect.construct(target, args);
+        const worker = {
+          onmessage: null as any,
+          onerror: null,
+          terminate() {},
+          postMessage() {
+            setTimeout(
+              () =>
+                worker.onmessage?.({
+                  data: {
+                    type: "result",
+                    text: "This sentence has a spelling error.",
+                  },
+                }),
+              20,
+            );
+          },
+        };
+        return worker;
+      },
+    });
+  });
+  await page.goto("/");
+  const source = "This sentnce has a speling eror.";
+  const editor = page.getByLabel("本文", { exact: true });
+  await editor.fill(source);
+  await page
+    .getByText("端末内でタイポを確認（試験機能）", { exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: "タイポの修正候補を作る", exact: true })
+    .click();
+  const candidate = page.getByLabel("修正候補（編集できます）");
+  await expect(candidate).toHaveValue("This sentence has a spelling error.");
+  await page.getByRole("button", { name: "すべて外す", exact: true }).click();
+  await expect(candidate).toHaveValue(source);
+  await expect(
+    page.getByRole("button", { name: "この候補を本文に反映", exact: true }),
+  ).toBeDisabled();
+  await page
+    .getByRole("checkbox", { name: "候補1を採用", exact: true })
+    .check();
+  await expect(candidate).toHaveValue("This sentence has a speling eror.");
+  await candidate.fill("This sentence has a spelling mistake.");
+  await expect(
+    page.getByRole("button", {
+      name: "手動編集を取り消して候補選択に戻す",
+      exact: true,
+    }),
+  ).toBeVisible();
+  await page
+    .getByRole("button", {
+      name: "手動編集を取り消して候補選択に戻す",
+      exact: true,
+    })
+    .click();
+  await expect(candidate).toHaveValue("This sentence has a speling eror.");
+  await expect(editor).toHaveValue(source);
+  await page
+    .getByRole("button", { name: "この候補を本文に反映", exact: true })
+    .click();
+  await expect(editor).toHaveValue("This sentence has a speling eror.");
+});
+
+test("PDFの字体変更で分かれた単語に余分な空白を足さず取り込む", async ({
+  page,
+}) => {
+  const pdf = await PDFDocument.create(),
+    normal = await pdf.embedFont(StandardFonts.Helvetica),
+    ligature = await pdf.embedFont(StandardFonts.TimesRoman),
+    sheet = pdf.addPage();
+  let x = 72;
+  for (const [text, font] of [
+    ["She ", normal],
+    ["sti", normal],
+    ["fl", ligature],
+    ["ed", normal],
+    [" a yawn.", normal],
+  ] as const) {
+    sheet.drawText(text, { x, y: 700, size: 12, font });
+    x += font.widthOfTextAtSize(text, 12);
+  }
+  await page.goto("/");
+  await page.getByLabel("資料ファイル").setInputFiles({
+    name: "font-runs.pdf",
+    mimeType: "application/pdf",
+    buffer: Buffer.from(await pdf.save()),
+  });
+  await expect(page.getByLabel("本文", { exact: true })).toHaveValue(
+    "She stifled a yawn.",
+  );
+});
+
+test("分断語の修正候補を外しても文字断片を削除しない", async ({ page }) => {
+  await page.addInitScript(() => {
+    const Native = window.Worker;
+    window.Worker = new Proxy(Native, {
+      construct(target, args) {
+        if (!String(args[0]).includes("local-ai.worker"))
+          return Reflect.construct(target, args);
+        const worker = {
+          onmessage: null as any,
+          onerror: null,
+          terminate() {},
+          postMessage() {
+            setTimeout(
+              () =>
+                worker.onmessage?.({
+                  data: { type: "result", text: "She stifled a yawn." },
+                }),
+              20,
+            );
+          },
+        };
+        return worker;
+      },
+    });
+  });
+  await page.goto("/");
+  const editor = page.getByLabel("本文", { exact: true });
+  await editor.fill("She sti fl ed a yawn.");
+  await page
+    .getByText("端末内でタイポを確認（試験機能）", { exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: "タイポの修正候補を作る", exact: true })
+    .click();
+  const candidate = page.getByLabel("修正候補（編集できます）");
+  await expect(candidate).toHaveValue("She stifled a yawn.");
+  await expect(
+    page.getByRole("checkbox", { name: /候補\d+を採用/ }),
+  ).toHaveCount(1);
+  await page
+    .getByRole("checkbox", { name: "候補1を採用", exact: true })
+    .uncheck();
+  await expect(candidate).toHaveValue("She sti fl ed a yawn.");
+  await expect(editor).toHaveValue("She sti fl ed a yawn.");
 });

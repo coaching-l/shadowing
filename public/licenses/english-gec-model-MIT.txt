@@ -1,0 +1,37 @@
+English contextual proofreading model
+
+Original model: visheratin/t5-efficient-mini-grammar-correction
+Original author: Alexander Visheratin (@visheratin)
+Original model card (license: MIT):
+https://huggingface.co/visheratin/t5-efficient-mini-grammar-correction/blob/034fd4276852e7da609156fea0ff448459e602df/README.md
+
+ONNX INT8 conversion: TonyRaju/visheratin-t5-mini-grammar-correction-onnx-int8
+Revision: d66fc3a79198beab31feb7c86998c8c6ee56ed95
+https://huggingface.co/TonyRaju/visheratin-t5-mini-grammar-correction-onnx-int8
+Weights are retrieved unmodified from that pinned revision. This app implements
+local decoding and filters its proposed edits; it does not retrain the model.
+The source T5-Efficient architecture is from Google (Apache-2.0).
+
+MIT License (standard text; declared in the original model card)
+
+The upstream model card supplies the MIT identifier and author attribution;
+it does not supply a separate copyright notice for these weights.
+
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the
+'Software'), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED 'AS IS', WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.

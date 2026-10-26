@@ -1,4 +1,5 @@
 import type { PDFWorker } from "pdfjs-dist";
+import { joinPdfText } from "./pdf-text";
 export const MAX_FILE = 20 * 1024 * 1024;
 let pdfModule: Promise<typeof import("pdfjs-dist")> | undefined;
 let pdfWorker: PDFWorker | undefined;
@@ -66,13 +67,7 @@ export async function extractDocument(
             const number = next++;
             const page = await pdf.getPage(number);
             const content = await page.getTextContent();
-            parts[number - 1] = content.items
-              .map((item) =>
-                "str" in item
-                  ? item.str + ("hasEOL" in item && item.hasEOL ? "\n" : " ")
-                  : "",
-              )
-              .join("");
+            parts[number - 1] = joinPdfText(content.items);
             page.cleanup();
             completed++;
             onProgress(
