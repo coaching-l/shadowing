@@ -60,6 +60,11 @@ tslib@2.8.1 — 0BSD
 @img/sharp-win32-x64@0.34.5 — Apache-2.0 AND LGPL-3.0-or-later
 @isaacs/fs-minipass@4.0.1 — ISC
 @jridgewell/sourcemap-codec@1.6.0 — MIT
+@mdgate/containers@0.6.25 — MIT
+@mdgate/core@0.6.25 — MIT
+@mdgate/document@0.6.25 — MIT
+@mdgate/iwork-common@0.6.25 — MIT
+@mdgate/utils@0.6.25 — MIT
 @napi-rs/canvas@0.1.100 — MIT
 @napi-rs/canvas-android-arm64@0.1.100 — MIT
 @napi-rs/canvas-darwin-arm64@0.1.100 — MIT
