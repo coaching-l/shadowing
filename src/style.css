@@ -917,7 +917,7 @@ footer span {
     order: 2;
   }
   .privacy {
-    display: none;
+    order: 3;
   }
   .main-column {
     order: 1;

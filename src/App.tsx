@@ -563,7 +563,12 @@ export default function App() {
                 あなたの端末の中に。
               </h3>
               <p className="small">
-                本文や音声をサーバーへ送りません。音声モデルの初回取得時だけ、配布サイトへ通信します。
+                本文や音声をサーバーへ送りません。AIモデルなどの取得時は、配布サイトへ通信します。
+              </p>
+              <p className="small">
+                <strong>使用上の注意</strong>
+                <br />
+                教材・録音の保存先は、この端末のブラウザー内です。万が一の情報漏えいに備え、氏名・住所・電話番号などの個人情報や機密情報を含む文章・資料・音声は使用しないでください。
               </p>
               <details>
                 <summary>使い方と制約</summary>
@@ -642,8 +647,15 @@ export default function App() {
                   }}
                 />
               </label>
+              <p id="direct-text-help" className="small">
+                <strong>
+                  本文欄にテキストを直接貼り付ければ、ファイルをアップロードせずに音声を作れます。
+                </strong>
+                <br />
+                下の「02 読み上げ原稿を整える」にある「本文」欄へ、読み上げたいテキストを貼り付けてください。
+              </p>
               <p className="small">
-                画像PDFのOCRは未対応です。文字を抽出できない資料は、本文を下に貼り付けてください。
+                スキャンした資料や写真だけのPDFは、そのままでは文字を読み取れません（OCR未対応）。別のアプリなどで文字に変換してから、「02」の「本文」欄に貼り付けてください。
               </p>
             </section>
             <section className="card">
@@ -660,6 +672,7 @@ export default function App() {
                 本文
                 <textarea
                   aria-label="本文"
+                  aria-describedby="direct-text-help"
                   ref={rawInput}
                   value={lesson.text}
                   disabled={busy}
