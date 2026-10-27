@@ -223,7 +223,7 @@ test("実MP3の持ち込み・再生・A–B・録音・MP3/ZIP出力・復元",
   await expect(page.getByText(/区間リピート.*3回目/)).toBeVisible();
   await page.getByText("自分の声を録音して比較", { exact: true }).click();
   await page
-    .getByRole("button", { name: "録音する／録り直す", exact: true })
+    .getByRole("button", { name: "お手本を再生しながら録音", exact: true })
     .click();
   await expect(
     page.getByRole("button", { name: "録音を停止", exact: true }),
@@ -399,7 +399,7 @@ test("マイク拒否・容量不足・生成失敗から通常操作へ戻れ�
   });
   await page.getByText("自分の声を録音して比較", { exact: true }).click();
   await page
-    .getByRole("button", { name: "録音する／録り直す", exact: true })
+    .getByRole("button", { name: "お手本を再生しながら録音", exact: true })
     .click();
   await expect(page.getByRole("alert")).toContainText(
     "通常の練習は続けられます",
@@ -1056,7 +1056,7 @@ test("5秒送り戻しは停止状態を保ち、再生中・区間リピート�
   await page.getByRole("button", { name: "一時停止", exact: true }).click();
   await page.getByText("自分の声を録音して比較", { exact: true }).click();
   await page
-    .getByRole("button", { name: "録音する／録り直す", exact: true })
+    .getByRole("button", { name: "お手本を再生しながら録音", exact: true })
     .click();
   await expect(
     page.getByRole("button", { name: "録音を停止", exact: true }),

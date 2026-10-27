@@ -1,6 +1,13 @@
 import { openDB } from "idb";
 import type { Clip, Gap, Lang } from "./core";
-export type Recording = { blob: Blob; a: number; b: number; label: string };
+export type Recording = {
+  blob: Blob;
+  a: number;
+  b: number;
+  label: string;
+  rate?: number;
+  mode?: "shadow" | "repeat";
+};
 export type Lesson = {
   id: string;
   title: string;

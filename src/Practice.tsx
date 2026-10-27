@@ -17,6 +17,8 @@ import type { Lesson, Recording } from "./storage";
 import { download, encodeMP3, zipMP3 } from "./export";
 import Timeline from "./Timeline";
 import RecordingFeedback from "./RecordingFeedback";
+import SecondsInput from "./SecondsInput";
+import { usePracticeRecording } from "./use-practice-recording";
 type Props = {
   lesson: Lesson;
   clips: Clip[];
@@ -68,16 +70,10 @@ export default function Practice({
       loop: boolean;
       after?: () => void;
     } | null>(null);
-  const recorder = useRef<MediaRecorder | null>(null),
-    stream = useRef<MediaStream | null>(null),
-    capturePending = useRef(false),
-    alive = useRef(true);
   const [playing, setPlaying] = useState(false),
     [time, setTime] = useState(0),
     [iteration, setIteration] = useState(1),
     [waiting, setWaiting] = useState(false),
-    [capturing, setCapturing] = useState(false),
-    [micPending, setMicPending] = useState(false),
     [exporting, setExporting] = useState(false),
     [exports, setExports] = useState<{ name: string; blob: Blob }[]>([]),
     [group, setGroup] = useState(10),
@@ -85,11 +81,29 @@ export default function Practice({
     [ownVolume, setOwnVolume] = useState(1);
   const priorData = useRef(data),
     gapWaiting = useRef(false);
-  useEffect(() => {
-    onCaptureChange(capturing || micPending);
-  }, [capturing, micPending, onCaptureChange]);
-  useEffect(() => () => onCaptureChange(false), [onCaptureChange]);
   const duration = data ? data.samples.length / data.rate : 0;
+  const capture = usePracticeRecording({
+    playModel: (target, ended, failed) =>
+      startRange(
+        target.a,
+        target.b,
+        false,
+        ended,
+        target.a,
+        target.rate,
+        failed,
+      ),
+    stopModel: () => stop(),
+    onRecording: setRecording,
+    onError: error,
+  });
+  const recordingRange = validRange(a, b, duration)
+    ? { a, b }
+    : { a: 0, b: duration };
+  useEffect(() => {
+    onCaptureChange(capture.busy);
+  }, [capture.busy, onCaptureChange]);
+  useEffect(() => () => onCaptureChange(false), [onCaptureChange]);
   const settings = useRef({ repeat, repeatGap });
   settings.current = { repeat, repeatGap };
   function stop(except?: HTMLAudioElement) {
@@ -103,7 +117,7 @@ export default function Practice({
     setPlaying(false);
     setWaiting(false);
   }
-  async function safePlay() {
+  async function safePlay(failed?: (message: string) => void) {
     const request = ++playRequest.current;
     try {
       await audio.current!.play();
@@ -112,7 +126,7 @@ export default function Practice({
       // Seeking, pausing or reaching B can interrupt an older play() promise.
       if (request !== playRequest.current) return;
       stop();
-      error(
+      (failed ?? error)(
         "再生を開始できませんでした。再生ボタンを押してください。 " + String(e),
       );
     }
@@ -123,18 +137,21 @@ export default function Practice({
     looping: boolean,
     after?: () => void,
     position = start,
+    playbackRate = rate,
+    failed?: (message: string) => void,
   ) {
     stop();
     if (!validRange(start, end, duration)) {
-      error("0 ≦ A < B ≦ 音声の長さにしてください。");
+      (failed ?? error)("0 ≦ A < B ≦ 音声の長さにしてください。");
       return;
     }
     counter.current = 1;
     setIteration(1);
     boundary.current = { a: start, b: end, loop: looping, after };
+    audio.current!.playbackRate = playbackRate;
     audio.current!.currentTime = position;
     setTime(position);
-    void safePlay();
+    void safePlay(failed);
   }
   useEffect(() => {
     if (!data) return;
@@ -142,6 +159,7 @@ export default function Practice({
     const url = URL.createObjectURL(wavBlob(data.samples, data.rate));
     el.src = url;
     return () => {
+      capture.cancel();
       stop();
       el.removeAttribute("src");
       el.load();
@@ -179,15 +197,6 @@ export default function Practice({
     };
   }, [recording]);
   useEffect(() => {
-    alive.current = true;
-    return () => {
-      alive.current = false;
-      stop();
-      if (recorder.current?.state === "recording") recorder.current.stop();
-      stream.current?.getTracks().forEach((t) => t.stop());
-    };
-  }, []);
-  useEffect(() => {
     const onHide = () => {
       if (document.hidden) stop();
     };
@@ -199,8 +208,10 @@ export default function Practice({
   }, [a, b, loop, repeat, repeatGap]);
   useEffect(() => {
     const onOtherPlay = (e: Event) => {
-      if (e.target !== audio.current && e.target instanceof HTMLAudioElement)
+      if (e.target !== audio.current && e.target instanceof HTMLAudioElement) {
+        capture.cancel();
         stop(e.target);
+      }
     };
     document.addEventListener("play", onOtherPlay, true);
     return () => document.removeEventListener("play", onOtherPlay, true);
@@ -267,7 +278,7 @@ export default function Practice({
     startRange(start, duration, false);
   }
   function skip(seconds: number) {
-    if (!data || capturing) return;
+    if (!data || capture.busy) return;
     if (loop && !validRange(a, b, duration)) {
       error("0 ≦ A < B ≦ 音声の長さにしてください。");
       return;
@@ -278,70 +289,12 @@ export default function Practice({
       next = Math.max(start, Math.min(end, el.currentTime + seconds)),
       resume = playing || waiting;
     stop();
+    el.playbackRate = rate;
     el.currentTime = next;
     setTime(next);
     if (resume && (next < end || loop)) {
       boundary.current = { a: start, b: end, loop };
       void safePlay();
-    }
-  }
-  async function record() {
-    if (capturing) {
-      recorder.current?.stop();
-      return;
-    }
-    if (capturePending.current) return;
-    stop();
-    document.querySelectorAll("audio").forEach((el) => el.pause());
-    capturePending.current = true;
-    setMicPending(true);
-    try {
-      if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder)
-        throw Error(
-          "このブラウザーでは録音できません。HTTPSまたはlocalhostで、対応ブラウザーをお使いください。",
-        );
-      const s = await navigator.mediaDevices.getUserMedia({ audio: true });
-      if (!alive.current) {
-        s.getTracks().forEach((t) => t.stop());
-        return;
-      }
-      stream.current = s;
-      const rec = new MediaRecorder(s);
-      recorder.current = rec;
-      const chunks: Blob[] = [];
-      const range = validRange(a, b, duration)
-        ? { a, b }
-        : { a: 0, b: duration };
-      rec.ondataavailable = (e) => {
-        if (e.data.size) chunks.push(e.data);
-      };
-      rec.onstop = () => {
-        s.getTracks().forEach((t) => t.stop());
-        if (!alive.current) return;
-        setCapturing(false);
-        const blob = new Blob(chunks, { type: rec.mimeType });
-        if (blob.size)
-          setRecording({
-            ...range,
-            blob,
-            label: `${formatTime(range.a)}–${formatTime(range.b)}`,
-          });
-      };
-      rec.onerror = () => {
-        s.getTracks().forEach((t) => t.stop());
-        setCapturing(false);
-        error("録音中にエラーが発生しました。");
-      };
-      rec.start();
-      setCapturing(true);
-    } catch (e) {
-      error(
-        "録音を開始できませんでした。マイク権限を確認してください。通常の練習は続けられます。 " +
-          String(e),
-      );
-    } finally {
-      capturePending.current = false;
-      setMicPending(false);
     }
   }
   async function output(kind: "plain" | "gaps" | "ab" | "parts") {
@@ -400,12 +353,14 @@ export default function Practice({
       <div className="segmented">
         <button
           aria-pressed={mode === "shadow"}
+          disabled={capture.busy}
           onClick={() => update({ mode: "shadow" })}
         >
           シャドーイング
         </button>
         <button
           aria-pressed={mode === "repeat"}
+          disabled={capture.busy}
           onClick={() => update({ mode: "repeat" })}
         >
           リピーティング
@@ -417,6 +372,7 @@ export default function Practice({
             文間の無音
             <select
               value={gap.mode}
+              disabled={capture.busy}
               onChange={(e) =>
                 update({
                   gap: { ...gap, mode: e.target.value as typeof gap.mode },
@@ -431,19 +387,10 @@ export default function Practice({
           {gap.mode === "fixed" && (
             <label>
               無音（秒）
-              <input
-                type="number"
-                min="0"
-                max="30"
+              <SecondsInput
                 value={gap.seconds}
-                onChange={(e) =>
-                  update({
-                    gap: {
-                      ...gap,
-                      seconds: Math.max(0, Math.min(30, +e.target.value)),
-                    },
-                  })
-                }
+                disabled={capture.busy}
+                onChange={(seconds) => update({ gap: { ...gap, seconds } })}
               />
             </label>
           )}
@@ -455,36 +402,20 @@ export default function Practice({
               <div className="row">
                 <label>
                   下限（秒）
-                  <input
-                    type="number"
-                    min="0"
+                  <SecondsInput
                     max={gap.max}
                     value={gap.min}
-                    onChange={(e) =>
-                      update({
-                        gap: {
-                          ...gap,
-                          min: Math.max(0, Math.min(gap.max, +e.target.value)),
-                        },
-                      })
-                    }
+                    disabled={capture.busy}
+                    onChange={(min) => update({ gap: { ...gap, min } })}
                   />
                 </label>
                 <label>
                   上限（秒）
-                  <input
-                    type="number"
+                  <SecondsInput
                     min={gap.min}
-                    max="30"
                     value={gap.max}
-                    onChange={(e) =>
-                      update({
-                        gap: {
-                          ...gap,
-                          max: Math.max(gap.min, Math.min(30, +e.target.value)),
-                        },
-                      })
-                    }
+                    disabled={capture.busy}
+                    onChange={(max) => update({ gap: { ...gap, max } })}
                   />
                 </label>
               </div>
@@ -527,7 +458,7 @@ export default function Practice({
           time={time}
           a={a}
           b={b}
-          disabled={!data || capturing}
+          disabled={!data || capture.busy}
           onAdjustStart={() => stop()}
           onRangeChange={(range) => {
             stop();
@@ -543,7 +474,7 @@ export default function Practice({
           <button
             className="skip-seconds"
             aria-label="5秒戻る"
-            disabled={!data || capturing}
+            disabled={!data || capture.busy}
             onClick={() => skip(-5)}
           >
             <RotateCcw size={22} />
@@ -551,7 +482,7 @@ export default function Practice({
           </button>
           <button
             className="play-button"
-            disabled={!data || capturing}
+            disabled={!data || capture.busy}
             onClick={toggle}
           >
             {playing || waiting ? <Pause /> : <Play />}
@@ -560,7 +491,7 @@ export default function Practice({
           <button
             className="skip-seconds"
             aria-label="5秒進む"
-            disabled={!data || capturing}
+            disabled={!data || capture.busy}
             onClick={() => skip(5)}
           >
             <RotateCw size={22} />
@@ -571,7 +502,7 @@ export default function Practice({
           <button
             aria-label="前の文"
             className="small-button"
-            disabled={!data || capturing}
+            disabled={!data || capture.busy}
             onClick={() => {
               const idx = Math.max(0, active - 1);
               startRange(data!.spans[idx].start, duration, false);
@@ -582,7 +513,7 @@ export default function Practice({
           <button
             aria-label="次の文"
             className="small-button"
-            disabled={!data || capturing}
+            disabled={!data || capture.busy}
             onClick={() => {
               const idx = Math.min(data!.spans.length - 1, active + 1);
               startRange(data!.spans[idx].start, duration, false);
@@ -598,6 +529,7 @@ export default function Practice({
           </div>
           <input
             id="playback-speed"
+            disabled={capture.busy}
             type="range"
             min="0.5"
             max="2"
@@ -607,7 +539,11 @@ export default function Practice({
           />
           <div className="speed-scale">
             <span>0.5×（ゆっくり）</span>
-            <button className="text-button" onClick={() => setRate(1)}>
+            <button
+              className="text-button"
+              disabled={capture.busy}
+              onClick={() => setRate(1)}
+            >
               1.0×に戻す
             </button>
             <span>2.0×（速い）</span>
@@ -625,6 +561,7 @@ export default function Practice({
               開始 A（秒）
               <input
                 aria-label="開始 A（秒）"
+                disabled={capture.busy}
                 type="number"
                 min="0"
                 max={duration}
@@ -637,6 +574,7 @@ export default function Practice({
               終了 B（秒）
               <input
                 aria-label="終了 B（秒）"
+                disabled={capture.busy}
                 type="number"
                 min="0"
                 max={duration}
@@ -659,6 +597,7 @@ export default function Practice({
             繰り返し回数
             <select
               value={repeat}
+              disabled={capture.busy}
               onChange={(e) => update({ repeat: +e.target.value })}
             >
               {[1, 3, 5, 0].map((n) => (
@@ -671,17 +610,10 @@ export default function Practice({
           </label>
           <label>
             区間の間の無音（秒）
-            <input
-              type="number"
-              min="0"
-              max="30"
-              step="0.5"
+            <SecondsInput
               value={repeatGap}
-              onChange={(e) =>
-                update({
-                  repeatGap: Math.max(0, Math.min(30, +e.target.value)),
-                })
-              }
+              disabled={capture.busy}
+              onChange={(repeatGap) => update({ repeatGap })}
             />
           </label>
         </div>
@@ -690,13 +622,14 @@ export default function Practice({
             <input
               type="checkbox"
               checked={loop}
-              disabled={!validRange(a, b, duration)}
+              disabled={capture.busy || !validRange(a, b, duration)}
               onChange={(e) => setLoop(e.target.checked)}
             />
             区間リピート {loop && `· ${iteration}回目`}
           </label>
           <button
             className="text-button"
+            disabled={capture.busy}
             onClick={() => {
               setLoop(false);
               update({ a: 0, b: 0 });
@@ -719,7 +652,7 @@ export default function Practice({
                 className={`sentence ${active === i ? "active" : ""}`}
               >
                 <button
-                  disabled={capturing}
+                  disabled={capture.busy}
                   onClick={() => startRange(s.start, duration, false)}
                 >
                   <span className="sentence-number">
@@ -735,27 +668,82 @@ export default function Practice({
       <details>
         <summary>自分の声を録音して比較</summary>
         <p className="small">
-          録音は端末内だけで扱います。A–B区間（未設定なら全文）に対応づけます。マイクはHTTPSまたはlocalhostが必要です。
+          <strong>
+            {mode === "shadow"
+              ? "シャドーイング：お手本を聴きながら、少し遅れて同じ文章を話す練習です。"
+              : "リピーティング：お手本を聴き終えてから、まねして話す練習です。"}
+          </strong>
+          <br />
+          {mode === "shadow"
+            ? "2秒のカウントダウン後、お手本の再生と録音を同時に開始します。最後の言葉まで話せるよう、お手本の終了から2秒後に自動停止します。"
+            : "お手本を1回聴き、2秒のカウントダウン後にあなたの声を録音します。お手本の再生時間＋2秒で自動停止します。"}
+        </p>
+        <p className="small">
+          録音する範囲：
+          {validRange(a, b, duration) ? "選択したA–B区間" : "全文"}
+          {data &&
+            `（${formatTime(recordingRange.a)}–${formatTime(recordingRange.b)}、お手本 ${((recordingRange.b - recordingRange.a) / rate).toFixed(1)}秒）`}
+          。 短い区間で練習したい場合は、先にゲージでA・Bを指定してください。
+        </p>
+        <p className="small">
+          マイクの音声を端末内で録音します。お手本の音が入り込まないよう、イヤホンをお使いください。別の画面に移ると、練習と録音を中止します。
         </p>
         <button
-          disabled={!data || micPending || aiBlocked}
-          onClick={() => void record()}
+          disabled={
+            !data ||
+            exporting ||
+            capture.phase === "finishing" ||
+            (!capture.busy && aiBlocked)
+          }
+          onClick={() => {
+            if (capture.busy) capture.stop();
+            else {
+              error("");
+              void capture.start({ ...recordingRange, mode, rate });
+            }
+          }}
         >
-          {capturing ? <Square size={18} /> : <Mic size={18} />}{" "}
-          {micPending
-            ? "マイクを準備中"
-            : capturing
+          {capture.busy ? <Square size={18} /> : <Mic size={18} />}{" "}
+          {capture.phase === "finishing"
+            ? "録音を処理中…"
+            : capture.capturing
               ? "録音を停止"
-              : "録音する／録り直す"}
+              : capture.busy
+                ? "録音の準備を中止"
+                : mode === "shadow"
+                  ? "お手本を再生しながら録音"
+                  : "お手本を聴いてから録音"}
         </button>
-        {capturing && <span role="status"> 録音中…</span>}
+        {capture.busy && (
+          <p className="notice" role="status" aria-label="練習録音の状況">
+            {capture.phase === "preparing"
+              ? "マイクを準備しています。録音の許可が表示されたら許可してください。"
+              : capture.phase === "listening"
+                ? "まず、お手本を聴いてください。まだ録音していません。"
+                : capture.phase === "countdown"
+                  ? `録音開始まで ${capture.countdown}…`
+                  : capture.phase === "finishing"
+                    ? "録音データを準備しています…"
+                    : capture.phase === "tail"
+                      ? "お手本が終わりました。最後の言葉まで話してください。2秒後に録音を止めます。"
+                      : `${mode === "shadow" ? "録音中：お手本を少し遅れて追いかけて話してください。" : "録音中：あなたの番です。お手本をまねして話してください。"} ${formatTime(capture.elapsed)}`}
+          </p>
+        )}
         <audio ref={recordAudio} />
         {recording && (
           <>
             <p className="small">録音の対応区間：{recording.label}</p>
+            {recording.mode && (
+              <p className="small">
+                {recording.mode === "shadow"
+                  ? "シャドーイング"
+                  : "リピーティング"}
+                の録音です。お手本と聴き比べて、発音やリズムを確認しましょう。
+              </p>
+            )}
             <div className="row">
               <button
-                disabled={capturing}
+                disabled={capture.busy}
                 onClick={() => {
                   stop();
                   recordAudio.current!.currentTime = 0;
@@ -767,19 +755,28 @@ export default function Practice({
                 録音を再生
               </button>
               <button
-                disabled={capturing}
+                disabled={capture.busy}
                 onClick={() =>
-                  startRange(recording.a, recording.b, false, () => {
-                    recordAudio.current!.currentTime = 0;
-                    void recordAudio
-                      .current!.play()
-                      .catch((e) => error(String(e)));
-                  })
+                  startRange(
+                    recording.a,
+                    recording.b,
+                    false,
+                    () => {
+                      recordAudio.current!.currentTime = 0;
+                      void recordAudio
+                        .current!.play()
+                        .catch((e) => error(String(e)));
+                    },
+                    recording.a,
+                    recording.rate ?? rate,
+                  )
                 }
               >
                 お手本 → 自分の声
               </button>
-              <button onClick={() => stop()}>比較を停止</button>
+              <button disabled={capture.busy} onClick={() => stop()}>
+                比較を停止
+              </button>
             </div>
             <RecordingFeedback
               recording={recording}
@@ -802,7 +799,7 @@ export default function Practice({
                     (span.start < recording.b && span.end > recording.b),
                 )
               }
-              blocked={aiBlocked || capturing}
+              blocked={aiBlocked || capture.busy}
               onBusyChange={onAIBusyChange}
               onPrepare={() => {
                 stop();
@@ -845,20 +842,22 @@ export default function Practice({
         </p>
         <div className="button-grid">
           <button
-            disabled={!data || exporting}
+            disabled={!data || exporting || capture.busy}
             onClick={() => void output("plain")}
           >
             <Download size={17} />
             全文・無音なし
           </button>
           <button
-            disabled={!data || exporting}
+            disabled={!data || exporting || capture.busy}
             onClick={() => void output("gaps")}
           >
             全文・設定した無音あり
           </button>
           <button
-            disabled={!data || exporting || !validRange(a, b, duration)}
+            disabled={
+              !data || exporting || capture.busy || !validRange(a, b, duration)
+            }
             onClick={() => void output("ab")}
           >
             選択したA–B区間
@@ -879,7 +878,7 @@ export default function Practice({
             />
           </label>
           <button
-            disabled={!data || exporting}
+            disabled={!data || exporting || capture.busy}
             onClick={() => void output("parts")}
           >
             文数で分割する
