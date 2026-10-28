@@ -1,4 +1,3 @@
-import { isAppleMobile, MOBILE_CHINESE_NOTICE } from "./tts-platform";
 import {
   startTtsAttempt,
   updateTtsAttempt,
@@ -20,12 +19,8 @@ export const ZH_VOICES = [
 ];
 // No cloud inference, accounts, API keys, browser speechSynthesis or paid fallback.
 export class BrowserEngine {
-  readonly chineseGenerationBlocked: boolean;
   private workerLanguage: "en" | "zh" | undefined;
   private attempt: string | undefined;
-  constructor(appleMobile = isAppleMobile()) {
-    this.chineseGenerationBlocked = appleMobile;
-  }
   private worker: Worker | undefined;
   private timeout: ReturnType<typeof setTimeout> | undefined;
   private reject: ((reason: Error) => void) | undefined;
@@ -37,8 +32,6 @@ export class BrowserEngine {
     source?: TtsAttemptSource,
   ): Promise<{ samples: Float32Array; rate: number }> {
     if (this.reject) throw Error("生成処理が進行中です。");
-    if (voice.startsWith("z") && this.chineseGenerationBlocked)
-      throw Error(MOBILE_CHINESE_NOTICE);
     if (
       !voice.startsWith("z") &&
       /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u.test(text)

@@ -1,9 +1,9 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
-import { isAppleMobile, MOBILE_CHINESE_NOTICE } from "../src/tts-platform";
+import { isAppleMobile } from "../src/tts-platform";
 import { BrowserEngine } from "../src/engine";
 
 afterEach(() => vi.unstubAllGlobals());
-describe("iPhone・iPadの中国語生成の案内", () => {
+describe("Appleモバイル端末の判別", () => {
   it("iPhone SafariとChrome、iPadOSのデスクトップ表示を判別する", () => {
     expect(
       isAppleMobile({
@@ -37,7 +37,7 @@ describe("iPhone・iPadの中国語生成の案内", () => {
       }),
     ).toBe(true);
   });
-  it("PCの中国語生成やAndroidを誤って止めない", () => {
+  it("PCやAndroidをAppleモバイルと判別しない", () => {
     expect(
       isAppleMobile({
         userAgent: "Mozilla/5.0 Macintosh",
@@ -53,13 +53,42 @@ describe("iPhone・iPadの中国語生成の案内", () => {
     );
     expect(isAppleMobile({})).toBe(false);
   });
-  it("iOSの中国語は重いWorkerを作る前に停止し、PC音声の取り込みを案内する", async () => {
-    const worker = vi.fn();
+  it("iPhoneでも中国語生成Workerを開始し、有効な生成結果を返す", async () => {
+    vi.stubGlobal("navigator", {
+      userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X)",
+    });
+    class WorkerMock {
+      onmessage: ((event: { data: unknown }) => void) | null = null;
+      onerror = null;
+      postMessage = vi.fn(() => {
+        queueMicrotask(() =>
+          this.onmessage?.({
+            data: {
+              type: "audio",
+              samples: new Float32Array([0.1, -0.1]),
+              rate: 24000,
+            },
+          }),
+        );
+      });
+      terminate = vi.fn();
+    }
+    const worker = vi.fn(function () {
+      return new WorkerMock();
+    });
     vi.stubGlobal("Worker", worker);
-    const engine = new BrowserEngine(true);
-    await expect(
-      engine.generate("请深呼吸。", "zf_001", 1, () => {}),
-    ).rejects.toThrow(MOBILE_CHINESE_NOTICE);
-    expect(worker).not.toHaveBeenCalled();
+    const engine = new BrowserEngine();
+    const generated = await engine.generate(
+      "请深呼吸。",
+      "zf_001",
+      1,
+      () => {},
+    );
+    expect(worker).toHaveBeenCalledOnce();
+    expect(generated).toEqual({
+      samples: new Float32Array([0.1, -0.1]),
+      rate: 24000,
+    });
+    engine.cancel();
   });
 });

@@ -11,12 +11,20 @@ import {
   Download,
   Repeat2,
 } from "lucide-react";
-import { formatTime, mergeAudio, NO_GAP, validRange, wavBlob } from "./core";
-import type { Clip } from "./core";
+import {
+  formatTime,
+  mergeAudio,
+  NO_GAP,
+  timeline,
+  validRange,
+  wavBlob,
+} from "./core";
+import type { Clip, Span } from "./core";
 import type { Lesson, Recording } from "./storage";
 import { download, encodeMP3, zipMP3 } from "./export";
 import Timeline from "./Timeline";
 import RecordingFeedback from "./RecordingFeedback";
+import ImportedAudioTranscript from "./ImportedAudioTranscript";
 import SecondsInput from "./SecondsInput";
 import { usePracticeRecording } from "./use-practice-recording";
 type Props = {
@@ -48,15 +56,33 @@ export default function Practice({
     loop = lesson.loop ?? false;
   const setRate = (rate: number) => update({ rate }),
     setLoop = (loop: boolean) => update({ loop });
-  const merged = useMemo(() => {
+  const merged = useMemo<
+    | { samples: Float32Array; rate: number; spans: Span[] }
+    | { error: string }
+    | null
+  >(() => {
     try {
+      // Imported audio is already one continuous clip. Keep its PCM in place
+      // rather than allocating another full-file copy before ASR on phones.
+      if (lesson.voice === "imported" && clips.length === 1) {
+        const clip = clips[0];
+        if (clip.samples.length > clip.rate * 60 * 20)
+          throw Error(
+            "端末のメモリーを保護するため、音声は20分までです。教材を分けてください。",
+          );
+        return {
+          samples: clip.samples,
+          rate: clip.rate,
+          spans: timeline(clips, NO_GAP),
+        };
+      }
       return clips.length
         ? mergeAudio(clips, mode === "repeat" ? gap : NO_GAP)
         : null;
     } catch (e) {
       return { error: String(e) };
     }
-  }, [clips, gap, mode]);
+  }, [clips, gap, mode, lesson.voice]);
   const data = merged && "samples" in merged ? merged : null;
   const audio = useRef<HTMLAudioElement>(null),
     recordAudio = useRef<HTMLAudioElement>(null);
@@ -644,26 +670,50 @@ export default function Practice({
       </div>
       {data && (
         <details className="transcript">
-          <summary>本文を見る（文を押すとその位置から再生）</summary>
-          <div className="sentence-list">
-            {data.spans.map((s, i) => (
-              <div
-                key={i}
-                className={`sentence ${active === i ? "active" : ""}`}
-              >
-                <button
-                  disabled={capture.busy}
-                  onClick={() => startRange(s.start, duration, false)}
+          <summary>
+            {lesson.voice === "imported"
+              ? "本文を見る（音声との自動位置合わせなし）"
+              : "本文を見る（文を押すとその位置から再生）"}
+          </summary>
+          {lesson.voice === "imported" ? (
+            <p style={{ whiteSpace: "pre-wrap" }}>{lesson.text}</p>
+          ) : (
+            <div className="sentence-list">
+              {data.spans.map((s, i) => (
+                <div
+                  key={i}
+                  className={`sentence ${active === i ? "active" : ""}`}
                 >
-                  <span className="sentence-number">
-                    {String(i + 1).padStart(2, "0")} · {formatTime(s.start)}
-                  </span>
-                  {s.text}
-                </button>
-              </div>
-            ))}
-          </div>
+                  <button
+                    disabled={capture.busy}
+                    onClick={() => startRange(s.start, duration, false)}
+                  >
+                    <span className="sentence-number">
+                      {String(i + 1).padStart(2, "0")} · {formatTime(s.start)}
+                    </span>
+                    {s.text}
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
         </details>
+      )}
+      {lesson.voice === "imported" && data && (
+        <ImportedAudioTranscript
+          samples={data.samples}
+          sampleRate={data.rate}
+          lang={lesson.lang}
+          a={a}
+          b={b}
+          blocked={aiBlocked || capture.busy || exporting}
+          onPrepare={() => {
+            stop();
+            onPrepareAI();
+          }}
+          onBusyChange={onAIBusyChange}
+          onApply={(text) => update({ text })}
+        />
       )}
       <details>
         <summary>自分の声を録音して比較</summary>

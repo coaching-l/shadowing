@@ -134,7 +134,8 @@ export default function RecordingFeedback({
     <div className="local-ai-panel">
       <h3>録音のAIフィードバック（試験機能）</h3>
       <p className="small">
-        0.4〜30秒の録音を端末内で文字起こしします。初回は約41
+        0.4〜30秒の録音を端末内で文字起こしします。英語はWhisper
+        tiny.en、中国語はWhisper tinyを使い、初回は言語ごとに約41
         MBのモデルを取得します。録音は外部AIへ送りません。認識結果との違いは発音ミスとは限りません。発音・アクセント・中国語の声調の採点には対応していません。
       </p>
       {(partial || !reference) && (

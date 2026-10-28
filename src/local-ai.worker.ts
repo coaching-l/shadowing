@@ -15,12 +15,21 @@ import type {
   PreTrainedTokenizer,
   AutomaticSpeechRecognitionPipeline,
 } from "@huggingface/transformers";
+import wasmUrl from "../node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.jsep.wasm?url";
+import {
+  asrProfile,
+  asrSegments,
+  validateAsrAudio,
+  ASR_SAMPLE_RATE,
+} from "./asr-config";
 env.allowLocalModels = false;
 env.backends.onnx.wasm!.numThreads = 1;
+env.backends.onnx.wasm!.wasmPaths = { wasm: wasmUrl };
 let corrector:
   | { model: PreTrainedModel; tokenizer: PreTrainedTokenizer }
   | undefined;
 let recognizer: AutomaticSpeechRecognitionPipeline | undefined;
+let recognizerLanguage: "en" | "zh" | undefined;
 let english: import("./english-context").EnglishContextCorrector | undefined;
 let working = false;
 self.onmessage = async ({ data }) => {
@@ -131,6 +140,9 @@ self.onmessage = async ({ data }) => {
             text.slice(replacement.end);
       }
     } else if (data.kind === "transcribe") {
+      validateAsrAudio(data.samples);
+      if (data.lang !== "en" && data.lang !== "zh")
+        throw Error("文字起こしの言語を選んでください。");
       if (english) {
         await english.dispose();
         english = undefined;
@@ -139,28 +151,43 @@ self.onmessage = async ({ data }) => {
         await corrector.model.dispose();
         corrector = undefined;
       }
+      if (recognizer && recognizerLanguage !== data.lang) {
+        await recognizer.dispose();
+        recognizer = undefined;
+      }
+      const profile = asrProfile(data.lang);
       recognizer ??= await pipeline<"automatic-speech-recognition">(
         "automatic-speech-recognition",
-        "Xenova/whisper-tiny",
+        profile.model,
         {
-          revision: "5332fcc35e32a33b86612b9a57a89be7906102b1",
+          revision: profile.revision,
           dtype: "q8",
           device: "wasm",
           progress_callback,
         },
       );
-      self.postMessage({
-        type: "status",
-        message: "端末内で録音を文字起こししています…",
-      });
-      const output = await recognizer(data.samples, {
-        language: data.lang === "zh" ? "chinese" : "english",
-        task: "transcribe",
-        max_new_tokens: 384,
-      });
-      if (Array.isArray(output))
-        throw Error("文字起こしの形式を確認できませんでした。");
-      text = output.text.trim();
+      recognizerLanguage = data.lang;
+      const parts: string[] = [];
+      for (const segment of asrSegments(data.samples)) {
+        self.postMessage({
+          type: "status",
+          message: `端末内で音声を文字起こししています… ${Math.round(segment.start / ASR_SAMPLE_RATE)}〜${Math.round(segment.end / ASR_SAMPLE_RATE)}秒 / ${Math.ceil(data.samples.length / ASR_SAMPLE_RATE)}秒`,
+        });
+        let energy = 0;
+        for (const sample of segment.samples) energy += sample * sample;
+        // Avoid hallucinated speech in fully silent sections of long files.
+        if (Math.sqrt(energy / segment.samples.length) < 0.0001) continue;
+        const output = await recognizer(segment.samples, {
+          ...profile.generation,
+          max_new_tokens: 384,
+          num_beams: 1,
+          return_timestamps: false,
+        });
+        if (Array.isArray(output))
+          throw Error("文字起こしの形式を確認できませんでした。");
+        parts.push(output.text.trim());
+      }
+      text = parts.filter(Boolean).join(data.lang === "en" ? " " : "");
     } else throw Error("対応していない処理です。");
     self.postMessage({ type: "result", text });
   } catch (e) {

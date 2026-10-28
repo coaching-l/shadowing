@@ -37,13 +37,39 @@ test.beforeEach(async ({ page }) => {
         configurable: true,
         get: () => userAgent,
       });
-      const state = ((window as any).mobileTtsCheck = { workers: 0 });
+      const state = ((window as any).mobileTtsCheck = {
+        workers: 0,
+        requests: [] as { text: string; voice: string }[],
+      });
       const NativeWorker = window.Worker;
       window.Worker = new Proxy(NativeWorker, {
         construct(target, args) {
           if (String(args[0]).includes("engine.worker")) {
             state.workers++;
-            throw new Error("Mobile Chinese inference must not start");
+            const worker = {
+              onmessage: null as ((event: { data: unknown }) => void) | null,
+              onerror: null,
+              terminate() {},
+              postMessage(request: { text: string; voice: string }) {
+                state.requests.push(request);
+                setTimeout(
+                  () =>
+                    worker.onmessage?.({
+                      data: {
+                        type: "audio",
+                        rate: 24000,
+                        samples: Float32Array.from(
+                          { length: 24000 },
+                          (_, i) =>
+                            0.1 * Math.sin((2 * Math.PI * 440 * i) / 24000),
+                        ),
+                      },
+                    }),
+                  50,
+                );
+              },
+            };
+            return worker;
           }
           return Reflect.construct(target, args);
         },
@@ -53,71 +79,65 @@ test.beforeEach(async ({ page }) => {
   );
 });
 
-test("iPhone扱いでは中国語モデルを読み込まずにPCからの取り込みを案内し、英語の操作は残す", async ({
+test("iPhone扱いでも中国語の試聴・全文生成を開始でき、英語の操作も使える", async ({
   page,
 }) => {
-  let modelDownloads = 0;
-  await page.context().route(/\.onnx(?:[?#]|$)/, (route) => {
-    modelDownloads++;
-    return route.abort();
-  });
   await page.goto("/");
   await page.getByLabel("練習する言語").selectOption("zh");
-  await page.getByLabel("本文", { exact: true }).fill("请深呼吸。");
-  const notice = page.getByRole("status", {
-    name: "iPhone・iPadで中国語を練習するには",
-    exact: true,
-  });
-  await expect(notice).toBeVisible();
-  await expect(notice).toContainText("PCでMP3をダウンロード");
+  await page
+    .getByLabel("本文", { exact: true })
+    .fill("请深呼吸。今天一起练习。");
   await expect(
-    page.getByRole("button", {
-      name: "PCで作成した音声を読み込む",
+    page.getByText("中国語音声はPCで作成し、この端末へ読み込んでください", {
       exact: true,
     }),
-  ).toBeEnabled();
+  ).toHaveCount(0);
   await expect(page.locator(".voice button")).toHaveCount(3);
   for (const button of await page.locator(".voice button").all()) {
-    await expect(button).toHaveText("PCで試聴");
-    await expect(button).toBeDisabled();
+    await expect(button).toHaveText("試聴");
+    await expect(button).toBeEnabled();
   }
+  await expect(page.getByLabel("生成時の発話速度")).toBeEnabled();
+  await page.getByRole("button", { name: "試聴", exact: true }).first().click();
   await expect(
-    page.getByRole("button", { name: "この声と設定で確定", exact: true }),
-  ).toBeDisabled();
-  await expect(
-    page.getByRole("button", { name: "全文生成", exact: true }),
-  ).toBeDisabled();
+    page.getByRole("button", { name: "試聴を再生", exact: true }),
+  ).toBeEnabled();
+  expect(
+    await page.evaluate(() => (window as any).mobileTtsCheck.requests),
+  ).toEqual([
+    { type: "generate", text: "请深呼吸。", voice: "zf_001", speed: 1 },
+  ]);
+  await page
+    .getByRole("button", { name: "この声と設定で確定", exact: true })
+    .click();
+  const generate = page.getByRole("button", { name: "全文生成", exact: true });
+  await expect(generate).toBeEnabled();
+  await generate.click();
+  await expect(page.getByText("2文の音声", { exact: true })).toBeVisible();
+  expect(
+    await page.evaluate(() => (window as any).mobileTtsCheck.requests),
+  ).toHaveLength(2);
   expect(
     await page.evaluate(() => (window as any).mobileTtsCheck.workers),
-  ).toBe(0);
-  expect(modelDownloads).toBe(0);
-  await notice.scrollIntoViewIfNeeded();
-  expect(
-    await page.evaluate(
-      () => document.documentElement.scrollWidth <= innerWidth,
-    ),
-  ).toBe(true);
-  await page.screenshot({ path: "/tmp/shadowing-mobile-chinese-notice.png" });
+  ).toBe(1);
 
   await page.getByLabel("練習する言語").selectOption("en");
   await page.getByLabel("本文", { exact: true }).fill("Take a deep breath.");
-  await expect(notice).toHaveCount(0);
   await expect(page.locator(".voice button")).toHaveCount(5);
   for (const button of await page.locator(".voice button").all())
     await expect(button).toBeEnabled();
   await page
     .getByRole("button", { name: "この声と設定で確定", exact: true })
     .click();
-  await expect(
-    page.getByRole("button", { name: "全文生成", exact: true }),
-  ).toBeEnabled();
+  await expect(generate).toBeEnabled();
   expect(
-    await page.evaluate(() => (window as any).mobileTtsCheck.workers),
-  ).toBe(0);
-  expect(modelDownloads).toBe(0);
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBe(true);
 });
 
-test("PC音声の取り込みボタンから新規WAVを開き、中国語を保って再生・A–B・速度変更できる", async ({
+test("手元の音声から新規WAVを開き、中国語を保って再生・A–B・速度変更できる", async ({
   page,
 }) => {
   let modelDownloads = 0;
@@ -127,10 +147,9 @@ test("PC音声の取り込みボタンから新規WAVを開き、中国語を保
   });
   await page.goto("/");
   await page.getByLabel("練習する言語").selectOption("zh");
+  await page.getByText("手元の音声で練習する", { exact: true }).click();
   const chooser = page.waitForEvent("filechooser");
-  await page
-    .getByRole("button", { name: "PCで作成した音声を読み込む", exact: true })
-    .click();
+  await page.getByLabel("練習用音声", { exact: true }).click();
   const fileChooser = await chooser;
   expect(await fileChooser.element().getAttribute("aria-label")).toBe(
     "練習用音声",

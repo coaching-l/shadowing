@@ -27,7 +27,6 @@ import Practice from "./Practice";
 import Proofreader from "./Proofreader";
 import { localAI } from "./local-ai";
 import { readInterruptedTtsAttempt, finishTtsAttempt } from "./tts-attempt";
-import { MOBILE_CHINESE_NOTICE } from "./tts-platform";
 type SpeechTask = { kind: "preview"; voice: string } | { kind: "full" };
 const fresh = (): Lesson => ({
   id: crypto.randomUUID(),
@@ -78,7 +77,6 @@ export default function App() {
   const rawInput = useRef<HTMLTextAreaElement>(null),
     engine = useRef(new BrowserEngine()),
     preview = useRef<HTMLAudioElement>(null),
-    importedAudioInput = useRef<HTMLInputElement>(null),
     previewUrl = useRef(""),
     cancelled = useRef(false);
   const update = (patch: Partial<Lesson>) => {
@@ -87,20 +85,16 @@ export default function App() {
   };
   const report = (message: string) => setError(message);
   const availableVoices = lesson.lang === "zh" ? ZH_VOICES : VOICES;
-  const mobileChineseBlocked =
-    lesson.lang === "zh" && engine.current.chineseGenerationBlocked;
   const config = JSON.stringify([lesson.lang, lesson.voice, lesson.speed]);
-  const generationHint = mobileChineseBlocked
-    ? "iPhone・iPadでは中国語音声を新規作成できません。PCで作成したMP3を読み込んで練習してください。"
-    : importing
-      ? "資料を読み込んでいます。"
-      : !lesson.text.trim()
-        ? "資料を取り込むか、本文を入力してください。"
-        : confirmed !== config
-          ? "「この声と設定で確定」を押すと、全文生成に進めます。"
-          : !lesson.sentences.length
-            ? "全文生成を押すと本文を自動で文に分割します。事前に確認したい場合は「文に分割する」を使えます。"
-            : "";
+  const generationHint = importing
+    ? "資料を読み込んでいます。"
+    : !lesson.text.trim()
+      ? "資料を取り込むか、本文を入力してください。"
+      : confirmed !== config
+        ? "「この声と設定で確定」を押すと、全文生成に進めます。"
+        : !lesson.sentences.length
+          ? "全文生成を押すと本文を自動で文に分割します。事前に確認したい場合は「文に分割する」を使えます。"
+          : "";
   const clips = useMemo(() => {
     const map = new Map(lesson.clips.map((c) => [c.key, c]));
     const current = lesson.sentences.map((text) =>
@@ -391,6 +385,10 @@ export default function App() {
     )
       return;
     setImporting(true);
+    // Decode MP3s without retaining an idle inference model's WASM heap.
+    engine.current.cancel();
+    localAI.release();
+    stopPreview();
     let ctx: AudioContext | undefined;
     try {
       ctx = new AudioContext();
@@ -919,34 +917,6 @@ export default function App() {
                     : "Kokoro 中国語 · 試験対応"}
                 </span>
               </div>
-              {mobileChineseBlocked && (
-                <div
-                  className="notice"
-                  role="status"
-                  aria-label="iPhone・iPadで中国語を練習するには"
-                >
-                  <strong>
-                    中国語音声はPCで作成し、この端末へ読み込んでください
-                  </strong>
-                  <p>{MOBILE_CHINESE_NOTICE}</p>
-                  <p>
-                    PCでMP3をダウンロードし、AirDropなどでこの端末へ送ってから読み込むと、再生・A–Bリピート・速度変更・録音を使えます。
-                  </p>
-                  <button
-                    disabled={busy || importing}
-                    onClick={() => {
-                      const input = importedAudioInput.current;
-                      if (!input) return;
-                      const details = input.closest("details");
-                      if (details) details.open = true;
-                      input.scrollIntoView({ block: "center" });
-                      input.click();
-                    }}
-                  >
-                    PCで作成した音声を読み込む
-                  </button>
-                </div>
-              )}
               {lesson.voice === "imported" && (
                 <p className="small">
                   取り込んだ音声は「04
@@ -955,9 +925,7 @@ export default function App() {
               )}
               <>
                 <p className="muted">
-                  {mobileChineseBlocked
-                    ? "この端末では、PCで作成した中国語音声を読み込んで練習してください。"
-                    : "同じ原稿で、英語は5声、中国語は3声を聴き比べられます。試聴して、発音や区切り、好みに合う声か確認してください。"}
+                  同じ原稿で、英語は5声、中国語は3声を聴き比べられます。試聴して、発音や区切り、好みに合う声か確認してください。
                 </p>
                 <label>
                   試聴原稿（400文字以内・空欄なら先頭1文）
@@ -976,11 +944,7 @@ export default function App() {
                   生成時の発話速度
                   <select
                     value={lesson.speed}
-                    disabled={
-                      busy ||
-                      mobileChineseBlocked ||
-                      lesson.voice === "imported"
-                    }
+                    disabled={busy || lesson.voice === "imported"}
                     onChange={(e) => {
                       update({ speed: +e.target.value });
                       setConfirmed("");
@@ -1004,11 +968,7 @@ export default function App() {
                           type="radio"
                           name="voice"
                           checked={lesson.voice === voice.id}
-                          disabled={
-                            busy ||
-                            mobileChineseBlocked ||
-                            lesson.voice === "imported"
-                          }
+                          disabled={busy || lesson.voice === "imported"}
                           onChange={() => {
                             update({ voice: voice.id });
                             setConfirmed("");
@@ -1025,10 +985,7 @@ export default function App() {
                       <button
                         className="small-button"
                         disabled={
-                          busy ||
-                          importing ||
-                          mobileChineseBlocked ||
-                          lesson.voice === "imported"
+                          busy || importing || lesson.voice === "imported"
                         }
                         aria-busy={
                           task?.kind === "preview" && task.voice === voice.id
@@ -1040,13 +997,11 @@ export default function App() {
                         ) : (
                           <Headphones size={15} />
                         )}
-                        {mobileChineseBlocked
-                          ? "PCで試聴"
-                          : task?.kind === "preview" && task.voice === voice.id
-                            ? "試聴を準備中…"
-                            : previewVoice === voice.id
-                              ? "もう一度聴く"
-                              : "試聴"}
+                        {task?.kind === "preview" && task.voice === voice.id
+                          ? "試聴を準備中…"
+                          : previewVoice === voice.id
+                            ? "もう一度聴く"
+                            : "試聴"}
                       </button>
                     </div>
                   ))}
@@ -1110,7 +1065,6 @@ export default function App() {
                   disabled={
                     busy ||
                     importing ||
-                    mobileChineseBlocked ||
                     !availableVoices.some((v) => v.id === lesson.voice)
                   }
                   onClick={() => {
@@ -1145,7 +1099,6 @@ export default function App() {
                     disabled={
                       busy ||
                       importing ||
-                      mobileChineseBlocked ||
                       confirmed !== config ||
                       !lesson.text.trim()
                     }
@@ -1181,7 +1134,6 @@ export default function App() {
                 </p>
                 <input
                   aria-label="練習用音声"
-                  ref={importedAudioInput}
                   type="file"
                   accept="audio/*"
                   disabled={busy || importing}

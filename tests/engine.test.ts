@@ -32,7 +32,7 @@ afterEach(() => {
 
 describe("音声生成の失敗からの復帰", () => {
   it("言語を切り替えたらWorkerごと解放し、古いWASMメモリーを残さない", async () => {
-    const engine = new BrowserEngine(false);
+    const engine = new BrowserEngine();
     const first = engine.generate("Hello.", "af_heart", 1, () => {});
     FakeWorker.instances[0].reply(audio());
     await first;
