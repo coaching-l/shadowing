@@ -228,15 +228,25 @@ export default function App() {
       );
       preview.current!.src = previewUrl.current;
       setPreviewVoice(voice);
-      await preview.current!.play();
-      setProgress(
-        cached
-          ? "保存済みの音声を再利用しました。"
-          : "試聴音声を生成しました。",
-      );
+      try {
+        await preview.current!.play();
+        setProgress(
+          cached
+            ? "保存済みの音声を再利用しました。"
+            : "試聴音声を生成しました。",
+        );
+      } catch (e) {
+        if (e instanceof DOMException && e.name === "NotAllowedError") {
+          setProgress(
+            "音声の準備ができました。下の「試聴を再生」を押してください。Safariでは再生ボタンのタップが必要な場合があります。",
+          );
+        } else throw e;
+      }
     } catch (e) {
-      if (!cancelled.current) setProgress("試聴を完了できませんでした。");
-      report(String(e));
+      if (!cancelled.current) {
+        setProgress("試聴を完了できませんでした。");
+        report(String(e));
+      }
     } finally {
       setTask(null);
     }
@@ -652,7 +662,8 @@ export default function App() {
                   本文欄にテキストを直接貼り付ければ、ファイルをアップロードせずに音声を作れます。
                 </strong>
                 <br />
-                下の「02 読み上げ原稿を整える」にある「本文」欄へ、読み上げたいテキストを貼り付けてください。
+                下の「02
+                読み上げ原稿を整える」にある「本文」欄へ、読み上げたいテキストを貼り付けてください。
               </p>
               <p className="small">
                 スキャンした資料や写真だけのPDFは、そのままでは文字を読み取れません（OCR未対応）。別のアプリなどで文字に変換してから、「02」の「本文」欄に貼り付けてください。
@@ -939,13 +950,39 @@ export default function App() {
                 </div>
                 <audio
                   ref={preview}
+                  aria-label="試聴音声"
                   controls={!!previewVoice}
                   onEnded={() => setPreviewVoice("")}
                 />
+                {!!previewVoice && (
+                  <button
+                    disabled={busy}
+                    onClick={() => {
+                      setError("");
+                      setProgressKind("preview");
+                      const audio = preview.current!;
+                      if (audio.ended) audio.currentTime = 0;
+                      void audio
+                        .play()
+                        .then(() => {
+                          setProgress("試聴音声を再生しています。");
+                        })
+                        .catch((e) => {
+                          setProgress(
+                            "音声は準備済みです。もう一度「試聴を再生」を押してください。",
+                          );
+                          report(
+                            "試聴の再生を開始できませんでした。 " + String(e),
+                          );
+                        });
+                    }}
+                  >
+                    <Headphones size={18} /> 試聴を再生
+                  </button>
+                )}
                 {speechProgress("preview")}
                 <p className="small">
-                  初回はHugging
-                  Faceからモデル、jsDelivrから実行ファイルを取得します。本文は外部送信せず、端末内のWebAssemblyで生成します。音声広告やサービス名を挿入する処理はありません。初回取得には時間がかかります。
+                  初回は音声モデルなどをダウンロードするため時間がかかります。本文は外部送信せず、端末内で生成します。iPhone・Safariで音声が自動再生されない場合は、準備完了後に「試聴を再生」を押してください。
                 </p>
                 <p className="small">
                   待ち時間を短くするため、空欄なら先頭の1文だけで試聴します。試聴・生成音声の一部をこの端末に最大32

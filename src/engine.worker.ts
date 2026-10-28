@@ -3,8 +3,13 @@ import {
   StyleTextToSpeech2Model,
   AutoTokenizer,
   Tensor,
+  env,
 } from "@huggingface/transformers";
 import { mandarinPhonemes } from "./mandarin";
+import wasmUrl from "../node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.jsep.wasm?url";
+// Use the bundled runtime and one thread, including in Safari without shared memory.
+env.backends.onnx.wasm!.numThreads = 1;
+env.backends.onnx.wasm!.wasmPaths = { wasm: wasmUrl };
 let english: KokoroTTS | undefined;
 let chinese:
   | {

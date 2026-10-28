@@ -46,9 +46,9 @@ export class BrowserEngine {
         180000,
       );
       this.worker!.onerror = (e) => {
-        this.reject = undefined;
-        clearTimeout(this.timeout);
-        reject(Error(e.message));
+        this.cancel(
+          "音声モデルの実行中にエラーが発生しました。詳細: " + e.message,
+        );
       };
       this.worker!.onmessage = ({ data }) => {
         if (data.type === "progress") {
@@ -57,8 +57,6 @@ export class BrowserEngine {
             `${p.file || "音声モデル"} ${p.progress ? Math.round(p.progress) + "%" : p.status || ""}${p.total ? " / " + (p.total / 1048576).toFixed(1) + " MB" : ""}`,
           );
         } else if (data.type === "audio") {
-          this.reject = undefined;
-          clearTimeout(this.timeout);
           if (
             !(data.samples instanceof Float32Array) ||
             !data.samples.length ||
@@ -72,18 +70,16 @@ export class BrowserEngine {
               data.rate,
               data.samples?.filter((s: number) => !Number.isFinite(s)).length,
             );
-            reject(Error("有効な音声データを生成できませんでした。"));
+            this.cancel("有効な音声データを生成できませんでした。");
             return;
           }
-          resolve({ samples: data.samples, rate: data.rate });
-        } else if (data.type === "error") {
           this.reject = undefined;
           clearTimeout(this.timeout);
-          reject(
-            Error(
-              "音声モデルの読み込み・生成に失敗しました。接続、端末の空きメモリーをご確認ください。詳細: " +
-                data.error,
-            ),
+          resolve({ samples: data.samples, rate: data.rate });
+        } else if (data.type === "error") {
+          this.cancel(
+            "音声モデルの読み込み・生成に失敗しました。接続、端末の空きメモリーをご確認ください。詳細: " +
+              data.error,
           );
         }
       };
@@ -92,7 +88,11 @@ export class BrowserEngine {
   }
   cancel(message = "生成を中止しました。成功済みの文は再利用できます。") {
     clearTimeout(this.timeout);
-    this.worker?.terminate();
+    if (this.worker) {
+      this.worker.onmessage = null;
+      this.worker.onerror = null;
+      this.worker.terminate();
+    }
     this.worker = undefined;
     this.reject?.(Error(message));
     this.reject = undefined;
