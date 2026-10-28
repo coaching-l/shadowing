@@ -26,6 +26,8 @@ import type { Lesson, Recording } from "./storage";
 import Practice from "./Practice";
 import Proofreader from "./Proofreader";
 import { localAI } from "./local-ai";
+import { readInterruptedTtsAttempt, finishTtsAttempt } from "./tts-attempt";
+import { MOBILE_CHINESE_NOTICE } from "./tts-platform";
 type SpeechTask = { kind: "preview"; voice: string } | { kind: "full" };
 const fresh = (): Lesson => ({
   id: crypto.randomUUID(),
@@ -47,7 +49,13 @@ const fresh = (): Lesson => ({
   updated: Date.now(),
 });
 export default function App() {
-  const [lesson, setLesson] = useState<Lesson>(fresh),
+  const [lesson, setLesson] = useState<Lesson>(() => {
+      const previous = readInterruptedTtsAttempt();
+      const initial = fresh();
+      return previous?.lang === "zh"
+        ? { ...initial, lang: "zh", voice: "zf_001" }
+        : initial;
+    }),
     [library, setLibrary] = useState<Lesson[]>([]),
     [notice, setNotice] = useState(""),
     [error, setError] = useState(""),
@@ -65,10 +73,12 @@ export default function App() {
     [importing, setImporting] = useState(false),
     [importProgress, setImportProgress] = useState(""),
     [saving, setSaving] = useState(false);
+  const [interrupted, setInterrupted] = useState(readInterruptedTtsAttempt);
   const busy = task !== null || localBusy || recordingBusy;
   const rawInput = useRef<HTMLTextAreaElement>(null),
     engine = useRef(new BrowserEngine()),
     preview = useRef<HTMLAudioElement>(null),
+    importedAudioInput = useRef<HTMLInputElement>(null),
     previewUrl = useRef(""),
     cancelled = useRef(false);
   const update = (patch: Partial<Lesson>) => {
@@ -77,16 +87,20 @@ export default function App() {
   };
   const report = (message: string) => setError(message);
   const availableVoices = lesson.lang === "zh" ? ZH_VOICES : VOICES;
+  const mobileChineseBlocked =
+    lesson.lang === "zh" && engine.current.chineseGenerationBlocked;
   const config = JSON.stringify([lesson.lang, lesson.voice, lesson.speed]);
-  const generationHint = importing
-    ? "資料を読み込んでいます。"
-    : !lesson.text.trim()
-      ? "資料を取り込むか、本文を入力してください。"
-      : confirmed !== config
-        ? "「この声と設定で確定」を押すと、全文生成に進めます。"
-        : !lesson.sentences.length
-          ? "全文生成を押すと本文を自動で文に分割します。事前に確認したい場合は「文に分割する」を使えます。"
-          : "";
+  const generationHint = mobileChineseBlocked
+    ? "iPhone・iPadでは中国語音声を新規作成できません。PCで作成したMP3を読み込んで練習してください。"
+    : importing
+      ? "資料を読み込んでいます。"
+      : !lesson.text.trim()
+        ? "資料を取り込むか、本文を入力してください。"
+        : confirmed !== config
+          ? "「この声と設定で確定」を押すと、全文生成に進めます。"
+          : !lesson.sentences.length
+            ? "全文生成を押すと本文を自動で文に分割します。事前に確認したい場合は「文に分割する」を使えます。"
+            : "";
   const clips = useMemo(() => {
     const map = new Map(lesson.clips.map((c) => [c.key, c]));
     const current = lesson.sentences.map((text) =>
@@ -99,6 +113,9 @@ export default function App() {
       (c) => c.key === clipKey(text, lesson.voice, lesson.speed),
     ),
   ).length;
+  useEffect(() => {
+    if (interrupted) finishTtsAttempt(interrupted.id);
+  }, []);
   useEffect(() => {
     const exclusive = (e: Event) =>
       document.querySelectorAll("audio").forEach((el) => {
@@ -217,6 +234,7 @@ export default function App() {
           voice,
           lesson.speed,
           setProgress,
+          "preview",
         );
         clip = result;
         void putSpeechCache(key, result);
@@ -299,6 +317,7 @@ export default function App() {
                 setProgress(
                   `${i + 1} / ${snapshot.sentences.length} 文 · ${msg}`,
                 ),
+              "full",
             ));
           if (cancelled.current) break;
           if (
@@ -385,6 +404,7 @@ export default function App() {
       }
       const text = "持ち込み音声（文の自動位置合わせなし）";
       const item = fresh();
+      item.lang = lesson.lang;
       item.title = file.name;
       item.text = text;
       item.sentences = [text];
@@ -483,6 +503,33 @@ export default function App() {
             <button className="text-button" onClick={() => setError("")}>
               閉じる
             </button>
+          </div>
+        )}
+        {interrupted && (
+          <div
+            className="status-banner"
+            role="status"
+            aria-label="前回の音声生成について"
+          >
+            <div>
+              <strong>前回の音声生成が途中で終了したようです</strong>
+              <p>
+                {interrupted.lang === "zh" ? "中国語" : "英語"}の音声を
+                {interrupted.stage === "loading"
+                  ? "読み込んでいる"
+                  : "生成している"}
+                間に、ページが閉じられたか読み直された可能性があります。端末のメモリー不足などでも起こります。処理は自動で再開していません。
+              </p>
+              <p>
+                再びページが読み直される場合は、PCで生成したMP3を「手元の音声で練習する」から読み込んでください。未保存の原稿は復元できません。生成前に「教材を保存」を使うと、このブラウザーの教材ライブラリから開き直せます。
+              </p>
+              <button
+                className="text-button"
+                onClick={() => setInterrupted(undefined)}
+              >
+                この案内を閉じる
+              </button>
+            </div>
           </div>
         )}
         {notice && (
@@ -619,8 +666,13 @@ export default function App() {
                     onChange={(e) => {
                       update({
                         lang: e.target.value as Lang,
-                        sentences: [],
-                        voice: e.target.value === "en" ? "af_heart" : "zf_001",
+                        ...(lesson.voice === "imported"
+                          ? {}
+                          : {
+                              sentences: [],
+                              voice:
+                                e.target.value === "en" ? "af_heart" : "zf_001",
+                            }),
                       });
                       setConfirmed("");
                       setPreviewText("");
@@ -867,9 +919,45 @@ export default function App() {
                     : "Kokoro 中国語 · 試験対応"}
                 </span>
               </div>
+              {mobileChineseBlocked && (
+                <div
+                  className="notice"
+                  role="status"
+                  aria-label="iPhone・iPadで中国語を練習するには"
+                >
+                  <strong>
+                    中国語音声はPCで作成し、この端末へ読み込んでください
+                  </strong>
+                  <p>{MOBILE_CHINESE_NOTICE}</p>
+                  <p>
+                    PCでMP3をダウンロードし、AirDropなどでこの端末へ送ってから読み込むと、再生・A–Bリピート・速度変更・録音を使えます。
+                  </p>
+                  <button
+                    disabled={busy || importing}
+                    onClick={() => {
+                      const input = importedAudioInput.current;
+                      if (!input) return;
+                      const details = input.closest("details");
+                      if (details) details.open = true;
+                      input.scrollIntoView({ block: "center" });
+                      input.click();
+                    }}
+                  >
+                    PCで作成した音声を読み込む
+                  </button>
+                </div>
+              )}
+              {lesson.voice === "imported" && (
+                <p className="small">
+                  取り込んだ音声は「04
+                  練習する」で再生してください。再生速度も04のスライダーで変更できます。
+                </p>
+              )}
               <>
                 <p className="muted">
-                  同じ原稿で、英語は5声、中国語は3声を聴き比べられます。試聴して、発音や区切り、好みに合う声か確認してください。
+                  {mobileChineseBlocked
+                    ? "この端末では、PCで作成した中国語音声を読み込んで練習してください。"
+                    : "同じ原稿で、英語は5声、中国語は3声を聴き比べられます。試聴して、発音や区切り、好みに合う声か確認してください。"}
                 </p>
                 <label>
                   試聴原稿（400文字以内・空欄なら先頭1文）
@@ -888,7 +976,11 @@ export default function App() {
                   生成時の発話速度
                   <select
                     value={lesson.speed}
-                    disabled={busy}
+                    disabled={
+                      busy ||
+                      mobileChineseBlocked ||
+                      lesson.voice === "imported"
+                    }
                     onChange={(e) => {
                       update({ speed: +e.target.value });
                       setConfirmed("");
@@ -912,7 +1004,11 @@ export default function App() {
                           type="radio"
                           name="voice"
                           checked={lesson.voice === voice.id}
-                          disabled={busy}
+                          disabled={
+                            busy ||
+                            mobileChineseBlocked ||
+                            lesson.voice === "imported"
+                          }
                           onChange={() => {
                             update({ voice: voice.id });
                             setConfirmed("");
@@ -928,7 +1024,12 @@ export default function App() {
                       </label>
                       <button
                         className="small-button"
-                        disabled={busy || importing}
+                        disabled={
+                          busy ||
+                          importing ||
+                          mobileChineseBlocked ||
+                          lesson.voice === "imported"
+                        }
                         aria-busy={
                           task?.kind === "preview" && task.voice === voice.id
                         }
@@ -939,11 +1040,13 @@ export default function App() {
                         ) : (
                           <Headphones size={15} />
                         )}
-                        {task?.kind === "preview" && task.voice === voice.id
-                          ? "試聴を準備中…"
-                          : previewVoice === voice.id
-                            ? "もう一度聴く"
-                            : "試聴"}
+                        {mobileChineseBlocked
+                          ? "PCで試聴"
+                          : task?.kind === "preview" && task.voice === voice.id
+                            ? "試聴を準備中…"
+                            : previewVoice === voice.id
+                              ? "もう一度聴く"
+                              : "試聴"}
                       </button>
                     </div>
                   ))}
@@ -1007,6 +1110,7 @@ export default function App() {
                   disabled={
                     busy ||
                     importing ||
+                    mobileChineseBlocked ||
                     !availableVoices.some((v) => v.id === lesson.voice)
                   }
                   onClick={() => {
@@ -1041,6 +1145,7 @@ export default function App() {
                     disabled={
                       busy ||
                       importing ||
+                      mobileChineseBlocked ||
                       confirmed !== config ||
                       !lesson.text.trim()
                     }
@@ -1076,6 +1181,7 @@ export default function App() {
                 </p>
                 <input
                   aria-label="練習用音声"
+                  ref={importedAudioInput}
                   type="file"
                   accept="audio/*"
                   disabled={busy || importing}

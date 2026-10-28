@@ -1,3 +1,11 @@
+import { isAppleMobile, MOBILE_CHINESE_NOTICE } from "./tts-platform";
+import {
+  startTtsAttempt,
+  updateTtsAttempt,
+  finishTtsAttempt,
+  type TtsAttemptSource,
+} from "./tts-attempt";
+
 export const VOICES = [
   { id: "af_heart", name: "Heart", detail: "米国英語 · 女性" },
   { id: "af_bella", name: "Bella", detail: "米国英語 · 女性" },
@@ -12,6 +20,12 @@ export const ZH_VOICES = [
 ];
 // No cloud inference, accounts, API keys, browser speechSynthesis or paid fallback.
 export class BrowserEngine {
+  readonly chineseGenerationBlocked: boolean;
+  private workerLanguage: "en" | "zh" | undefined;
+  private attempt: string | undefined;
+  constructor(appleMobile = isAppleMobile()) {
+    this.chineseGenerationBlocked = appleMobile;
+  }
   private worker: Worker | undefined;
   private timeout: ReturnType<typeof setTimeout> | undefined;
   private reject: ((reason: Error) => void) | undefined;
@@ -20,8 +34,11 @@ export class BrowserEngine {
     voice: string,
     speed: number,
     progress: (message: string) => void,
+    source?: TtsAttemptSource,
   ): Promise<{ samples: Float32Array; rate: number }> {
     if (this.reject) throw Error("生成処理が進行中です。");
+    if (voice.startsWith("z") && this.chineseGenerationBlocked)
+      throw Error(MOBILE_CHINESE_NOTICE);
     if (
       !voice.startsWith("z") &&
       /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u.test(text)
@@ -33,9 +50,21 @@ export class BrowserEngine {
       throw Error(
         "この文は400文字を超えています。原稿の文を意味のまとまりで分割してください。切り捨てて生成しません。",
       );
-    this.worker ??= new Worker(new URL("./engine.worker.ts", import.meta.url), {
-      type: "module",
-    });
+    const language = voice.startsWith("z") ? "zh" : "en";
+    if (this.worker && this.workerLanguage !== language) this.cancel();
+    this.workerLanguage = language;
+    this.attempt = startTtsAttempt(language, source);
+    try {
+      this.worker ??= new Worker(
+        new URL("./engine.worker.ts", import.meta.url),
+        {
+          type: "module",
+        },
+      );
+    } catch (error) {
+      this.cancel();
+      throw error;
+    }
     return new Promise((resolve, reject) => {
       this.reject = reject;
       this.timeout = setTimeout(
@@ -51,7 +80,9 @@ export class BrowserEngine {
         );
       };
       this.worker!.onmessage = ({ data }) => {
-        if (data.type === "progress") {
+        if (data.type === "stage") {
+          updateTtsAttempt(this.attempt, data.stage);
+        } else if (data.type === "progress") {
           const p = data.progress;
           progress(
             `${p.file || "音声モデル"} ${p.progress ? Math.round(p.progress) + "%" : p.status || ""}${p.total ? " / " + (p.total / 1048576).toFixed(1) + " MB" : ""}`,
@@ -75,6 +106,8 @@ export class BrowserEngine {
           }
           this.reject = undefined;
           clearTimeout(this.timeout);
+          finishTtsAttempt(this.attempt);
+          this.attempt = undefined;
           resolve({ samples: data.samples, rate: data.rate });
         } else if (data.type === "error") {
           this.cancel(
@@ -83,17 +116,29 @@ export class BrowserEngine {
           );
         }
       };
-      this.worker!.postMessage({ type: "generate", text, voice, speed });
+      try {
+        this.worker!.postMessage({
+          type: "generate",
+          text,
+          voice,
+          speed,
+        });
+      } catch (error) {
+        this.cancel("音声生成を開始できませんでした。 " + String(error));
+      }
     });
   }
   cancel(message = "生成を中止しました。成功済みの文は再利用できます。") {
     clearTimeout(this.timeout);
+    finishTtsAttempt(this.attempt);
+    this.attempt = undefined;
     if (this.worker) {
       this.worker.onmessage = null;
       this.worker.onerror = null;
       this.worker.terminate();
     }
     this.worker = undefined;
+    this.workerLanguage = undefined;
     this.reject?.(Error(message));
     this.reject = undefined;
   }

@@ -75,6 +75,7 @@ self.onmessage = async ({ data }) => {
       const index =
         256 * Math.min(Math.max(input_ids.dims.at(-1)! - 2, 0), 509);
       const style = voices.get(data.voice)!.slice(index, index + 256);
+      self.postMessage({ type: "stage", stage: "synthesizing" });
       const result = await chinese.model({
         input_ids,
         style: new Tensor("float32", style, [1, 256]),
@@ -105,6 +106,7 @@ self.onmessage = async ({ data }) => {
           },
         });
       }
+      self.postMessage({ type: "stage", stage: "synthesizing" });
       const result = await english.generate(data.text, {
         voice: data.voice,
         speed: data.speed,
