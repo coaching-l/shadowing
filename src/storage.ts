@@ -1,5 +1,6 @@
 import { openDB } from "idb";
 import type { Clip, Gap, Lang } from "./core";
+import { clearSpeechCache } from "./speech-cache";
 export type Recording = {
   blob: Blob;
   a: number;
@@ -51,5 +52,8 @@ export async function listLessons(): Promise<Lesson[]> {
   );
 }
 export async function deleteLesson(id: string) {
+  // Preview-only clips may not belong to a saved lesson. Clear the shared
+  // temporary cache before deleting the row, so failure leaves a retryable item.
+  await clearSpeechCache();
   await (await db()).delete("lessons", id);
 }

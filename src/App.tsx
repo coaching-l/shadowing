@@ -71,9 +71,12 @@ export default function App() {
     [persistRecording, setPersistRecording] = useState(false),
     [importing, setImporting] = useState(false),
     [importProgress, setImportProgress] = useState(""),
-    [saving, setSaving] = useState(false);
+    [saving, setSaving] = useState(false),
+    [deleting, setDeleting] = useState<string | null>(null);
   const [interrupted, setInterrupted] = useState(readInterruptedTtsAttempt);
-  const busy = task !== null || localBusy || recordingBusy;
+  const busy =
+    task !== null || localBusy || recordingBusy || saving || deleting !== null;
+  const deletingRef = useRef(false);
   const rawInput = useRef<HTMLTextAreaElement>(null),
     engine = useRef(new BrowserEngine()),
     preview = useRef<HTMLAudioElement>(null),
@@ -134,6 +137,15 @@ export default function App() {
     preview.current?.pause();
     setPreviewVoice("");
   }
+  function clearPreview() {
+    stopPreview();
+    if (preview.current) {
+      preview.current.removeAttribute("src");
+      preview.current.load();
+    }
+    if (previewUrl.current) URL.revokeObjectURL(previewUrl.current);
+    previewUrl.current = "";
+  }
   function cancel() {
     cancelled.current = true;
     engine.current.cancel();
@@ -144,7 +156,13 @@ export default function App() {
     );
   }
   function reset() {
-    stopPreview();
+    cancelled.current = true;
+    engine.current.cancel();
+    localAI.release();
+    clearPreview();
+    const attempt = readInterruptedTtsAttempt();
+    if (attempt) finishTtsAttempt(attempt.id);
+    setInterrupted(undefined);
     setLesson(fresh());
     setConfirmed("");
     setPreviewText("");
@@ -152,6 +170,41 @@ export default function App() {
     setPersistRecording(false);
     setError("");
     setNotice("");
+    setFailed(null);
+    setProgress("");
+    setImportProgress("");
+  }
+  async function remove(item: Lesson) {
+    if (busy || importing || deletingRef.current) return;
+    if (
+      !confirm(
+        `「${item.title}」の本文・音声・保存した録音をすべて削除しますか？ 音声の一時キャッシュもまとめて削除します。削除後は元に戻せません。`,
+      )
+    )
+      return;
+    deletingRef.current = true;
+    setDeleting(item.id);
+    setError("");
+    setNotice("");
+    try {
+      await deleteLesson(item.id);
+      // Release model-local text/tensors even if the deleted lesson is not open.
+      engine.current.cancel();
+      localAI.release();
+      if (item.id === lesson.id) reset();
+      setLibrary((items) => items.filter((entry) => entry.id !== item.id));
+      setNotice(
+        "教材の本文・音声・保存した録音と、音声の一時キャッシュを削除しました。",
+      );
+    } catch (e) {
+      report(
+        "削除を完了できませんでした。教材は一覧に残しています。もう一度削除してください。 " +
+          String(e),
+      );
+    } finally {
+      deletingRef.current = false;
+      setDeleting(null);
+    }
   }
   async function loadFile(file: File) {
     setImportProgress("ファイルを読み込んでいます…");
@@ -344,7 +397,7 @@ export default function App() {
     }
   }
   async function save() {
-    if (saving) return;
+    if (busy || importing) return;
     setSaving(true);
     try {
       await saveLesson({
@@ -362,7 +415,7 @@ export default function App() {
     }
   }
   function open(item: Lesson) {
-    stopPreview();
+    clearPreview();
     setLesson(item);
     setConfirmed("");
     setRecording(item.recording);
@@ -388,7 +441,7 @@ export default function App() {
     // Decode MP3s without retaining an idle inference model's WASM heap.
     engine.current.cancel();
     localAI.release();
-    stopPreview();
+    clearPreview();
     let ctx: AudioContext | undefined;
     try {
       ctx = new AudioContext();
@@ -580,27 +633,7 @@ export default function App() {
                     aria-label={`${item.title}を削除`}
                     disabled={busy || importing}
                     className="icon-button"
-                    onClick={() => {
-                      if (
-                        confirm(
-                          `「${item.title}」を削除しますか？ 音声の一時キャッシュもまとめて削除します。`,
-                        )
-                      )
-                        void deleteLesson(item.id)
-                          .then(async () => {
-                            try {
-                              await clearSpeechCache();
-                            } catch (e) {
-                              report(
-                                "教材は削除しました。一時音声キャッシュの削除に失敗しました: " +
-                                  String(e),
-                              );
-                            }
-                            return listLessons();
-                          })
-                          .then(setLibrary)
-                          .catch((e) => report(String(e)));
-                    }}
+                    onClick={() => void remove(item)}
                   >
                     <Trash2 size={16} />
                   </button>
@@ -608,6 +641,9 @@ export default function App() {
               ))}
               <p className="small">
                 保存先はこの端末のブラウザー内（IndexedDB）です。履歴・サイトデータの削除や容量不足で失われる場合があります。大切な音声はダウンロードしてください。
+              </p>
+              <p className="small">
+                教材を削除すると、その本文・音声・保存した録音と音声の一時キャッシュを消去します。端末へ別途ダウンロードしたファイルは残ります。
               </p>
             </section>
             <section className="card privacy">
@@ -640,7 +676,7 @@ export default function App() {
               </details>
             </section>
           </aside>
-          <div className="main-column">
+          <div className="main-column" key={lesson.id}>
             <section className="card">
               <div className="section-heading">
                 <h2>01 資料を取り込む</h2>

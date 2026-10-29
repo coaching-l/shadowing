@@ -107,6 +107,24 @@ export default function Practice({
     [ownVolume, setOwnVolume] = useState(1);
   const priorData = useRef(data),
     gapWaiting = useRef(false);
+  const exportTask = useRef<AbortController | null>(null),
+    outputVersion = useRef(0),
+    downloadURLs = useRef(new Set<() => void>());
+  function discardOutputs() {
+    outputVersion.current++;
+    exportTask.current?.abort();
+    exportTask.current = null;
+    for (const release of downloadURLs.current) release();
+    downloadURLs.current.clear();
+  }
+  function saveDownload(blob: Blob, name: string) {
+    downloadURLs.current.add(download(blob, name));
+  }
+  useEffect(() => () => discardOutputs(), []);
+  useEffect(() => {
+    discardOutputs();
+    setExporting(false);
+  }, [data]);
   const duration = data ? data.samples.length / data.rate : 0;
   const capture = usePracticeRecording({
     playModel: (target, ended, failed) =>
@@ -324,7 +342,10 @@ export default function Practice({
     }
   }
   async function output(kind: "plain" | "gaps" | "ab" | "parts") {
-    if (!data || exporting) return;
+    if (!data || exporting || exportTask.current) return;
+    discardOutputs();
+    const request = new AbortController();
+    exportTask.current = request;
     setExporting(true);
     stop();
     setExports([]);
@@ -351,7 +372,8 @@ export default function Practice({
             : merged.samples;
         if (kind === "ab" && !validRange(a, b, duration))
           throw Error("A–B区間を設定してください。");
-        const blob = await encodeMP3(samples, merged.rate);
+        const blob = await encodeMP3(samples, merged.rate, request.signal);
+        if (request.signal.aborted) return;
         files.push({
           name: `${safeTitle}-${kind}-${String(i + 1).padStart(2, "0")}.mp3`,
           blob,
@@ -359,9 +381,12 @@ export default function Practice({
       }
       setExports(files);
     } catch (e) {
-      error(String(e));
+      if (!request.signal.aborted) error(String(e));
     } finally {
-      setExporting(false);
+      if (exportTask.current === request) {
+        exportTask.current = null;
+        setExporting(false);
+      }
     }
   }
   const active =
@@ -943,7 +968,7 @@ export default function Practice({
           <button
             className="download-link"
             key={f.name}
-            onClick={() => download(f.blob, f.name)}
+            onClick={() => saveDownload(f.blob, f.name)}
           >
             <Download size={16} />
             {f.name}（{Math.ceil(f.blob.size / 1024)} KB）
@@ -952,9 +977,15 @@ export default function Practice({
         {exports.length > 1 && (
           <button
             onClick={() => {
+              const version = outputVersion.current;
               void zipMP3(exports)
-                .then((blob) => download(blob, "coaching-l-audio.zip"))
-                .catch((e) => error(String(e)));
+                .then((blob) => {
+                  if (version === outputVersion.current)
+                    saveDownload(blob, "coaching-l-audio.zip");
+                })
+                .catch((e) => {
+                  if (version === outputVersion.current) error(String(e));
+                });
             }}
           >
             まとめてZIP保存
